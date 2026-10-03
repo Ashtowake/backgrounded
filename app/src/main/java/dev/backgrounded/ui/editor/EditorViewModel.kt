@@ -23,6 +23,7 @@ import dev.backgrounded.domain.render.BackgroundRenderer
 import dev.backgrounded.domain.render.BitmapLoader
 import dev.backgrounded.domain.render.FillAligner
 import dev.backgrounded.domain.render.FitGeometry
+import dev.backgrounded.domain.render.GestureTransform
 import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.ui.nav.EditorRoute
 import kotlinx.coroutines.Dispatchers
@@ -36,20 +37,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-enum class EditScope {
-    HOME,
-    LOCK,
-    BOTH,
-}
-
 data class EditorUiState(
     val pair: BackgroundPair? = null,
     val targets: List<DisplayTargetInfo> = emptyList(),
-    val selectedTarget: DisplayTarget = DisplayTarget.INNER,
-    val scope: EditScope = EditScope.BOTH,
     val expandedKey: FramingKey? = null,
     val scrollPreview: Float = 0.5f,
     val previews: Map<FramingKey, Bitmap> = emptyMap(),
+    val scrollStartPreview: Bitmap? = null,
+    val scrollEndPreview: Bitmap? = null,
 )
 
 @HiltViewModel
@@ -78,13 +73,7 @@ class EditorViewModel
             viewModelScope.launch {
                 val targets = displayRepository.targets()
                 val pair = albumRepository.resolvedPair(pairId)
-                mutableState.update {
-                    it.copy(
-                        pair = pair,
-                        targets = targets,
-                        selectedTarget = targets.firstOrNull()?.target ?: DisplayTarget.INNER,
-                    )
-                }
+                mutableState.update { it.copy(pair = pair, targets = targets) }
                 renderRequests.trySend(Unit)
             }
             viewModelScope.launch {
@@ -109,12 +98,7 @@ class EditorViewModel
         }
 
         fun expand(key: FramingKey) {
-            mutableState.update {
-                it.copy(
-                    expandedKey = key,
-                    selectedTarget = key.display,
-                )
-            }
+            mutableState.update { it.copy(expandedKey = key) }
             renderRequests.trySend(Unit)
         }
 
@@ -123,14 +107,14 @@ class EditorViewModel
             renderRequests.trySend(Unit)
         }
 
-        fun setScope(scope: EditScope) {
-            mutableState.update { it.copy(scope = scope) }
-            renderRequests.trySend(Unit)
-        }
-
-        fun setScrollPreview(value: Float) {
-            mutableState.update { it.copy(scrollPreview = value.coerceIn(0f, 1f)) }
-            renderRequests.trySend(Unit)
+        fun panBy(
+            deltaX: Float,
+            deltaY: Float,
+        ) = updateFraming { framing ->
+            framing.copy(
+                panX = (framing.panX + deltaX).coerceIn(-MAX_PAN, MAX_PAN),
+                panY = (framing.panY + deltaY).coerceIn(-MAX_PAN, MAX_PAN),
+            )
         }
 
         fun setFitMode(mode: FitMode) = updateFraming { it.copy(fitMode = mode) }
@@ -141,26 +125,44 @@ class EditorViewModel
 
         fun setBackdropColor(color: Int) = updateFraming { it.copy(backdropColor = color) }
 
-        fun setScrollMode(mode: ScrollMode) = updateFraming { it.copy(scrollMode = mode) }
-
-        fun setScrollAmount(percent: Int) =
-            updateFraming {
-                it.copy(scrollAmountPercent = percent.coerceIn(0, ScrollGeometry.MAX_AMOUNT_PERCENT))
+        fun setScrollEnabled(enabled: Boolean) =
+            updateFraming { framing ->
+                if (enabled) {
+                    framing.copy(
+                        scrollMode = ScrollMode.CUSTOM,
+                        scrollAmountPercent = FULL_SLACK_PERCENT,
+                        scrollStartFraction =
+                            framing.scrollStartFraction.coerceIn(0f, 1f - ScrollGeometry.MIN_SPAN),
+                        scrollSpanFraction =
+                            framing.scrollSpanFraction.coerceIn(ScrollGeometry.MIN_SPAN, 1f),
+                    )
+                } else {
+                    framing.copy(scrollMode = ScrollMode.OFF)
+                }
             }
 
-        fun setScrollPages(pages: Int) =
-            updateFraming {
-                it.copy(scrollPages = pages.coerceIn(1, ScrollGeometry.MAX_PAGES))
+        /** Left edge of the visible window at the first home page, as a fraction of the band. */
+        fun setScrollLeft(fraction: Float) =
+            updateFraming { framing ->
+                val right =
+                    (framing.scrollStartFraction + framing.scrollSpanFraction)
+                        .coerceIn(ScrollGeometry.MIN_SPAN, 1f)
+                val left = fraction.coerceIn(0f, right - ScrollGeometry.MIN_SPAN)
+                framing.copy(
+                    scrollStartFraction = left,
+                    scrollSpanFraction = (right - left).coerceAtLeast(ScrollGeometry.MIN_SPAN),
+                )
             }
 
-        fun setScrollStart(fraction: Float) =
-            updateFraming {
-                it.copy(scrollStartFraction = fraction.coerceIn(0f, 1f))
-            }
-
-        fun setScrollSpan(fraction: Float) =
-            updateFraming {
-                it.copy(scrollSpanFraction = fraction.coerceIn(ScrollGeometry.MIN_SPAN, 1f))
+        /** Right edge of the visible window at the last home page, as a fraction of the band. */
+        fun setScrollRight(fraction: Float) =
+            updateFraming { framing ->
+                val left = framing.scrollStartFraction.coerceIn(0f, 1f - ScrollGeometry.MIN_SPAN)
+                val right = fraction.coerceIn(left + ScrollGeometry.MIN_SPAN, 1f)
+                framing.copy(
+                    scrollStartFraction = left,
+                    scrollSpanFraction = right - left,
+                )
             }
 
         fun setStretchX(value: Float) =
@@ -173,10 +175,7 @@ class EditorViewModel
                 it.copy(stretchY = value.coerceIn(FitGeometry.MIN_STRETCH, FitGeometry.MAX_STRETCH))
             }
 
-        fun setGyroParallax(enabled: Boolean) =
-            updateFraming {
-                it.copy(gyroParallax = enabled)
-            }
+        fun setGyroParallax(enabled: Boolean) = updateFraming { it.copy(gyroParallax = enabled) }
 
         fun setGyroIntensity(intensity: Int) =
             updateFraming {
@@ -198,34 +197,56 @@ class EditorViewModel
             renderRequests.trySend(Unit)
         }
 
-        fun alignAndFill() {
+        private var gestureStart: Framing? = null
+
+        fun beginGesture() {
             val state = mutableState.value
             val pair = state.pair ?: return
             val key = state.expandedKey ?: return
-            if (viewportWidth <= 0 || viewportHeight <= 0) return
-            viewModelScope.launch {
-                val asset = pair.imageFor(key.surface)
-                val framing = asset.framingFor(key.display, key.surface)
-                val source = obtainSource(asset) ?: return@launch
-                val rotated = framing.rotationDegrees % 180 == 90
-                val rotatedWidth = if (rotated) source.height else source.width
-                val rotatedHeight = if (rotated) source.width else source.height
-                updateFraming { current ->
-                    FillAligner.fill(
-                        framing = current,
-                        outWidth = viewportWidth,
-                        outHeight = viewportHeight,
-                        sourceWidth = rotatedWidth,
-                        sourceHeight = rotatedHeight,
-                    )
-                }
+            gestureStart = pair.imageFor(key.surface).framingFor(key.display, key.surface)
+        }
+
+        /** Applies the affine mapping the initial fingertip pair onto the current pair. */
+        fun updateGesture(
+            start: GestureTransform.FingerPair,
+            current: GestureTransform.FingerPair,
+            frameWidth: Float,
+            frameHeight: Float,
+        ) {
+            val startFraming = gestureStart ?: return
+            if (frameWidth <= 0f || frameHeight <= 0f) return
+            val state = mutableState.value
+            val pair = state.pair ?: return
+            val key = state.expandedKey ?: return
+            val settled =
+                GestureTransform.settle(
+                    startFraming = startFraming,
+                    gesture =
+                        GestureTransform.Gesture(
+                            start = start,
+                            current = current,
+                            frameWidth = frameWidth,
+                            frameHeight = frameHeight,
+                        ),
+                )
+            mutableState.update { it.copy(pair = pair.withFraming(key, settled)) }
+            renderRequests.trySend(Unit)
+        }
+
+        fun endGesture(snap: Boolean) {
+            val startFraming = gestureStart ?: return
+            gestureStart = null
+            if (!snap) return
+            val state = mutableState.value
+            val pair = state.pair ?: return
+            val key = state.expandedKey ?: return
+            val current = pair.imageFor(key.surface).framingFor(key.display, key.surface)
+            if (current.rotationDegrees != startFraming.rotationDegrees) {
+                snapRotation()
             }
         }
 
-        fun rotateQuarterTurn() =
-            updateFraming {
-                it.copy(rotationDegrees = (it.rotationDegrees + 90) % 360)
-            }
+        fun snapRotation() = updateFraming { GestureTransform.commitSnap(it) }
 
         fun transform(
             zoomChange: Float,
@@ -253,16 +274,67 @@ class EditorViewModel
             )
         }
 
+        /** Double tap: close any gaps by covering the frame, keeping the existing framing. */
+        fun alignAndFill() {
+            val state = mutableState.value
+            val pair = state.pair ?: return
+            val key = state.expandedKey ?: return
+            if (viewportWidth <= 0 || viewportHeight <= 0) return
+            viewModelScope.launch {
+                val asset = pair.imageFor(key.surface)
+                val framing = asset.framingFor(key.display, key.surface)
+                val source = obtainSource(asset) ?: return@launch
+                val rotated = framing.rotationDegrees % 180 == 90
+                val rotatedWidth = if (rotated) source.height else source.width
+                val rotatedHeight = if (rotated) source.width else source.height
+                updateFraming { current ->
+                    val scroll =
+                        if (key.surface == WallpaperSurface.HOME) {
+                            ScrollGeometry.scrollFor(current, viewportWidth)
+                        } else {
+                            ScrollGeometry.Scroll(0, 0f, 1f)
+                        }
+                    val bandStart = ScrollGeometry.translationPixels(scroll, 0f, allowScroll = true)
+                    val bandEnd = ScrollGeometry.translationPixels(scroll, 1f, allowScroll = true)
+                    FillAligner.fill(
+                        framing = current,
+                        outWidth = viewportWidth,
+                        outHeight = viewportHeight,
+                        sourceWidth = rotatedWidth,
+                        sourceHeight = rotatedHeight,
+                        coverageWidth = viewportWidth + (bandEnd - bandStart),
+                    )
+                }
+            }
+        }
+
+        /** Copies the current placement to the sibling destination of the same screen. */
+        fun syncToCounterpart() {
+            val state = mutableState.value
+            val pair = state.pair ?: return
+            val key = state.expandedKey ?: return
+            val otherSurface =
+                if (key.surface == WallpaperSurface.HOME) WallpaperSurface.LOCK else WallpaperSurface.HOME
+            val sourceFraming = pair.imageFor(key.surface).framingFor(key.display, key.surface)
+            val targetKey = FramingKey(key.display, otherSurface)
+            val target = pair.imageFor(otherSurface)
+            val updated = target.copy(framings = target.framings + (targetKey to sourceFraming))
+            val sameAsset = pair.home.id == pair.lock.id
+            val updatedPair =
+                when (otherSurface) {
+                    WallpaperSurface.HOME -> pair.copy(home = updated, lock = if (sameAsset) updated else pair.lock)
+                    WallpaperSurface.LOCK -> pair.copy(lock = updated, home = if (sameAsset) updated else pair.home)
+                }
+            mutableState.update { it.copy(pair = updatedPair) }
+            renderRequests.trySend(Unit)
+        }
+
         fun reset() {
             val state = mutableState.value
             val pair = state.pair ?: return
-            val keys = scopeKeys(state.scope, state.selectedTarget)
-            var updated = pair
-            keys.forEach { key ->
-                val framing = Background.defaultFramings()[key] ?: Framing.DEFAULT
-                updated = updated.withFraming(key, framing)
-            }
-            mutableState.update { it.copy(pair = updated) }
+            val key = state.expandedKey ?: return
+            val framing = Background.defaultFramings()[key] ?: Framing.DEFAULT
+            mutableState.update { it.copy(pair = pair.withFraming(key, framing)) }
             renderRequests.trySend(Unit)
         }
 
@@ -283,27 +355,12 @@ class EditorViewModel
             }
         }
 
-        fun currentFraming(): Framing {
-            val state = mutableState.value
-            val pair = state.pair ?: return Framing.DEFAULT
-            val surface =
-                when (state.scope) {
-                    EditScope.LOCK -> WallpaperSurface.LOCK
-                    else -> WallpaperSurface.HOME
-                }
-            return pair.imageFor(surface).framingFor(state.selectedTarget, surface)
-        }
-
         private fun updateFraming(transform: (Framing) -> Framing) {
             val state = mutableState.value
             val pair = state.pair ?: return
-            var updated = pair
-            scopeKeys(state.scope, state.selectedTarget).forEach { key ->
-                val asset = updated.imageFor(key.surface)
-                val current = asset.framingFor(key.display, key.surface)
-                updated = updated.withFraming(key, transform(current))
-            }
-            mutableState.update { it.copy(pair = updated) }
+            val key = state.expandedKey ?: return
+            val framing = transform(pair.imageFor(key.surface).framingFor(key.display, key.surface))
+            mutableState.update { it.copy(pair = pair.withFraming(key, framing)) }
             renderRequests.trySend(Unit)
         }
 
@@ -322,20 +379,6 @@ class EditorViewModel
             }
         }
 
-        private fun scopeKeys(
-            scope: EditScope,
-            target: DisplayTarget,
-        ): List<FramingKey> =
-            when (scope) {
-                EditScope.HOME -> listOf(FramingKey(target, WallpaperSurface.HOME))
-                EditScope.LOCK -> listOf(FramingKey(target, WallpaperSurface.LOCK))
-                EditScope.BOTH ->
-                    listOf(
-                        FramingKey(target, WallpaperSurface.HOME),
-                        FramingKey(target, WallpaperSurface.LOCK),
-                    )
-            }
-
         private fun previewKeys(state: EditorUiState): List<FramingKey> {
             state.expandedKey?.let { return listOf(it) }
             if (state.targets.isEmpty()) return Background.keys()
@@ -351,24 +394,72 @@ class EditorViewModel
             val height = viewportHeight.coerceAtMost(PREVIEW_MAX_HEIGHT_PX).coerceAtLeast(MIN_PREVIEW_PX)
             val rendered =
                 withContext(Dispatchers.Default) {
-                    previewKeys(state).associateWith { key ->
-                        val asset = pair.imageFor(key.surface)
-                        val source = obtainSource(asset) ?: return@associateWith null
-                        val width = (height * aspectOf(state, key.display)).toInt().coerceAtLeast(MIN_PREVIEW_PX)
-                        val framing = asset.framingFor(key.display, key.surface)
-                        val scroll = ScrollGeometry.scrollFor(framing, width)
-                        backgroundRenderer.renderWindow(
-                            framing = framing,
-                            source = source,
-                            viewport = BackgroundRenderer.Viewport(width, height),
-                            scroll = scroll,
-                            scrollOffset = state.scrollPreview,
-                            dim = asset.dimForLock && key.surface == WallpaperSurface.LOCK,
-                            allowScroll = key.surface == WallpaperSurface.HOME,
-                        )
-                    }.filterValues { it != null }.mapValues { entry -> entry.value!! }
+                    val previews =
+                        previewKeys(state).associateWith { key ->
+                            val asset = pair.imageFor(key.surface)
+                            val source = obtainSource(asset) ?: return@associateWith null
+                            val width = (height * aspectOf(state, key.display)).toInt().coerceAtLeast(MIN_PREVIEW_PX)
+                            val framing = asset.framingFor(key.display, key.surface)
+                            val scroll = ScrollGeometry.scrollFor(framing, width)
+                            backgroundRenderer.renderWindow(
+                                framing = framing,
+                                source = source,
+                                viewport = BackgroundRenderer.Viewport(width, height),
+                                scroll = scroll,
+                                scrollOffset = state.scrollPreview,
+                                dim = asset.dimForLock && key.surface == WallpaperSurface.LOCK,
+                                allowScroll = key.surface == WallpaperSurface.HOME,
+                            )
+                        }.filterValues { it != null }.mapValues { entry -> entry.value!! }
+
+                    var startPreview: Bitmap? = null
+                    var endPreview: Bitmap? = null
+                    val expanded = state.expandedKey
+                    if (expanded != null && expanded.surface == WallpaperSurface.HOME) {
+                        val asset = pair.imageFor(expanded.surface)
+                        val framing = asset.framingFor(expanded.display, expanded.surface)
+                        if (framing.scrollMode != ScrollMode.OFF) {
+                            val source = obtainSource(asset)
+                            if (source != null) {
+                                val smallHeight = (height / 2).coerceAtLeast(MIN_PREVIEW_PX)
+                                val smallWidth =
+                                    (smallHeight * aspectOf(state, expanded.display))
+                                        .toInt()
+                                        .coerceAtLeast(MIN_PREVIEW_PX)
+                                val smallViewport = BackgroundRenderer.Viewport(smallWidth, smallHeight)
+                                val scroll = ScrollGeometry.scrollFor(framing, smallWidth)
+                                startPreview =
+                                    backgroundRenderer.renderWindow(
+                                        framing = framing,
+                                        source = source,
+                                        viewport = smallViewport,
+                                        scroll = scroll,
+                                        scrollOffset = 0f,
+                                        dim = false,
+                                        allowScroll = true,
+                                    )
+                                endPreview =
+                                    backgroundRenderer.renderWindow(
+                                        framing = framing,
+                                        source = source,
+                                        viewport = smallViewport,
+                                        scroll = scroll,
+                                        scrollOffset = 1f,
+                                        dim = false,
+                                        allowScroll = true,
+                                    )
+                            }
+                        }
+                    }
+                    Triple(previews, startPreview, endPreview)
                 }
-            mutableState.update { it.copy(previews = rendered) }
+            mutableState.update {
+                it.copy(
+                    previews = rendered.first,
+                    scrollStartPreview = rendered.second,
+                    scrollEndPreview = rendered.third,
+                )
+            }
         }
 
         private suspend fun obtainSource(asset: Background): Bitmap? {
@@ -406,5 +497,6 @@ class EditorViewModel
             const val MIN_PREVIEW_PX = 64
             const val MAX_SOURCE_DIMENSION = 2048
             const val DEFAULT_ASPECT = 0.462f
+            const val FULL_SLACK_PERCENT = 100
         }
     }

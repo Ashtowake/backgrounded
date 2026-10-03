@@ -6,8 +6,10 @@ import dev.backgrounded.domain.model.Framing
 import kotlin.math.max
 
 /**
- * Double-tap helper: enlarges the image just enough to cover the frame while keeping the
- * existing framing as close as possible (only the missing edges are pushed out).
+ * Double-tap helper: enlarges the image by only the factor needed to cover the frame and shifts
+ * it the minimum distance so that missing edges are pushed out, keeping the other edges aligned.
+ * With page scrolling the coverage target is the whole scroll band, while the image itself stays
+ * framed against the screen ([outWidth]).
  */
 object FillAligner {
     fun fill(
@@ -16,17 +18,18 @@ object FillAligner {
         outHeight: Int,
         sourceWidth: Int,
         sourceHeight: Int,
+        coverageWidth: Int = outWidth,
     ): Framing {
         if (outWidth <= 0 || outHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return framing
-        val frame = RectF(0f, 0f, outWidth.toFloat(), outHeight.toFloat())
+        val frame = RectF(0f, 0f, coverageWidth.coerceAtLeast(outWidth).toFloat(), outHeight.toFloat())
         val first = placement(framing, outWidth, outHeight, sourceWidth, sourceHeight)
         if (covers(first, frame)) return framing
 
         val adjusted =
             if (framing.fitMode == FitMode.STRETCH) {
                 val stretchX =
-                    if (first.destination.width() < outWidth) {
-                        framing.stretchX * outWidth / first.destination.width()
+                    if (first.destination.width() < frame.width()) {
+                        framing.stretchX * frame.width() / first.destination.width()
                     } else {
                         framing.stretchX
                     }
@@ -43,8 +46,8 @@ object FillAligner {
             } else {
                 val factor =
                     max(
-                        outWidth / first.destination.width(),
-                        outHeight / first.destination.height(),
+                        frame.width() / first.destination.width(),
+                        frame.height() / first.destination.height(),
                     )
                 framing.copy(zoom = (framing.zoom * factor).coerceAtMost(FitGeometry.MAX_ZOOM))
             }
@@ -52,14 +55,14 @@ object FillAligner {
         val second = placement(adjusted, outWidth, outHeight, sourceWidth, sourceHeight)
         val shiftX =
             when {
-                second.destination.left > 0f -> -second.destination.left
-                second.destination.right < outWidth -> outWidth - second.destination.right
+                second.destination.left > frame.left -> frame.left - second.destination.left
+                second.destination.right < frame.right -> frame.right - second.destination.right
                 else -> 0f
             }
         val shiftY =
             when {
-                second.destination.top > 0f -> -second.destination.top
-                second.destination.bottom < outHeight -> outHeight - second.destination.bottom
+                second.destination.top > frame.top -> frame.top - second.destination.top
+                second.destination.bottom < frame.bottom -> frame.bottom - second.destination.bottom
                 else -> 0f
             }
         return adjusted.copy(

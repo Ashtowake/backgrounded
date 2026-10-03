@@ -106,6 +106,10 @@
     <string name="scroll_amount_percent">Scroll width</string>
     <string name="scroll_pages_count">Home panels</string>
     <string name="scroll_start">Start position</string>
+    <string name="scroll_left_edge">Left edge</string>
+    <string name="scroll_right_edge">Right edge</string>
+    <string name="page_first">First page</string>
+    <string name="page_last">Last page</string>
     <string name="scroll_span">Visible range</string>
     <string name="scroll_preview">Preview position</string>
     <string name="backdrop_blur">Blur</string>
@@ -146,6 +150,9 @@
     <string name="lock_dim_default">Dim lock screen images by default</string>
     <string name="parallax">Parallax</string>
     <string name="parallax_intensity">Parallax intensity</string>
+    <string name="sync">Sync</string>
+    <string name="angle_snap">Angle snap</string>
+    <string name="grid">Grid</string>
     <string name="adjust">Adjust</string>
     <string name="history">History</string>
     <string name="history_empty">No changes yet</string>

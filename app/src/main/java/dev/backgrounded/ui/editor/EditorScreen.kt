@@ -1,17 +1,21 @@
 package dev.backgrounded.ui.editor
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -41,9 +45,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,7 +68,9 @@ import dev.backgrounded.domain.model.Framing
 import dev.backgrounded.domain.model.FramingKey
 import dev.backgrounded.domain.model.ScrollMode
 import dev.backgrounded.domain.model.WallpaperSurface
+import dev.backgrounded.domain.render.GestureTransform
 import dev.backgrounded.ui.components.SectionTitle
+import kotlin.math.hypot
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -220,6 +228,9 @@ private fun FramingEditor(
     val aspect = aspectOf(state, key.display)
     var adjustBackdrop by remember { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
+    var angleSnap by remember { mutableStateOf(true) }
+    var showGrid by remember { mutableStateOf(false) }
+    val angleSnapState = rememberUpdatedState(angleSnap)
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Box(modifier = modifier) {
@@ -236,21 +247,105 @@ private fun FramingEditor(
                         .background(Color.Black)
                         .onSizeChanged { viewModel.setViewport(it.width, it.height) }
                         .pointerInput(key, adjustBackdrop) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                if (size.width <= 0 || size.height <= 0) {
-                                    return@detectTransformGestures
-                                }
-                                val deltaX = pan.x / size.width
-                                val deltaY = pan.y / size.height
-                                if (adjustBackdrop) {
-                                    viewModel.transformBackdrop(zoom, deltaX, deltaY)
-                                } else {
-                                    viewModel.transform(zoom, deltaX, deltaY)
+                            val minFingerDistance = MIN_FINGER_DISTANCE.toPx()
+                            var lastTapAt = 0L
+                            awaitEachGesture {
+                                val firstDown = awaitFirstDown(requireUnconsumed = false)
+                                val primaryId = firstDown.id
+                                val primaryDownPosition = firstDown.position
+                                val downAt = System.currentTimeMillis()
+                                var primaryMoved = false
+                                var startPair: GestureTransform.FingerPair? = null
+                                var previousPair: GestureTransform.FingerPair? = null
+                                var singlePointerPosition: Offset? = null
+
+                                fun fingerPair(
+                                    vector: Offset,
+                                    centroid: Offset,
+                                ): GestureTransform.FingerPair =
+                                    GestureTransform.FingerPair(
+                                        centroidX = centroid.x,
+                                        centroidY = centroid.y,
+                                        vectorX = vector.x,
+                                        vectorY = vector.y,
+                                    )
+
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.filter { it.pressed }
+                                    event.changes.firstOrNull { it.id == primaryId }?.let { primary ->
+                                        if ((primary.position - primaryDownPosition).getDistance() >
+                                            viewConfiguration.touchSlop
+                                        ) {
+                                            primaryMoved = true
+                                        }
+                                    }
+                                    if (pressed.isEmpty()) {
+                                        val endedAt = System.currentTimeMillis()
+                                        viewModel.endGesture(angleSnapState.value)
+                                        if (!primaryMoved && endedAt - downAt <= TAP_MAX_MILLIS) {
+                                            val isDoubleTap =
+                                                endedAt - lastTapAt <= DOUBLE_TAP_WINDOW_MILLIS
+                                            lastTapAt = if (isDoubleTap) 0L else endedAt
+                                            if (isDoubleTap) viewModel.alignAndFill()
+                                        }
+                                        break
+                                    } else if (pressed.size >= 2) {
+                                        singlePointerPosition = null
+                                        val first = pressed[0].position
+                                        val second = pressed[1].position
+                                        val vector = second - first
+                                        val centroid = (first + second) / 2f
+                                        val length = vector.getDistance()
+                                        if (length >= minFingerDistance) {
+                                            val currentPair = fingerPair(vector, centroid)
+                                            val start = startPair
+                                            if (start == null) {
+                                                startPair = currentPair
+                                                if (!adjustBackdrop) viewModel.beginGesture()
+                                            } else if (adjustBackdrop) {
+                                                val previous = previousPair
+                                                if (previous != null) {
+                                                    viewModel.transformBackdrop(
+                                                        length / hypot(previous.vectorX, previous.vectorY),
+                                                        (centroid.x - previous.centroidX) / size.width,
+                                                        (centroid.y - previous.centroidY) / size.height,
+                                                    )
+                                                }
+                                            } else {
+                                                viewModel.updateGesture(
+                                                    start = start,
+                                                    current = currentPair,
+                                                    frameWidth = size.width.toFloat(),
+                                                    frameHeight = size.height.toFloat(),
+                                                )
+                                            }
+                                            previousPair = currentPair
+                                        } else {
+                                            startPair = null
+                                            previousPair = null
+                                        }
+                                    } else {
+                                        val position = pressed.first().position
+                                        val previousPosition = singlePointerPosition
+                                        singlePointerPosition = position
+                                        if (previousPosition != null &&
+                                            size.width > 0 &&
+                                            size.height > 0
+                                        ) {
+                                            val deltaX = (position.x - previousPosition.x) / size.width
+                                            val deltaY = (position.y - previousPosition.y) / size.height
+                                            if (adjustBackdrop) {
+                                                viewModel.transformBackdrop(1f, deltaX, deltaY)
+                                            } else {
+                                                viewModel.panBy(deltaX, deltaY)
+                                            }
+                                        }
+                                        startPair = null
+                                        previousPair = null
+                                    }
                                 }
                             }
-                        }
-                        .pointerInput(key) {
-                            detectTapGestures(onDoubleTap = { viewModel.alignAndFill() })
                         },
             ) {
                 val preview = state.previews[key]?.asImageBitmap()
@@ -261,6 +356,26 @@ private fun FramingEditor(
                         contentScale = ContentScale.FillBounds,
                         modifier = Modifier.fillMaxSize(),
                     )
+                }
+                if (showGrid) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val color = Color.White.copy(alpha = 0.35f)
+                        val stroke = 1.5.dp.toPx()
+                        for (fraction in listOf(1f / 3f, 2f / 3f)) {
+                            drawLine(
+                                color = color,
+                                start = Offset(size.width * fraction, 0f),
+                                end = Offset(size.width * fraction, size.height),
+                                strokeWidth = stroke,
+                            )
+                            drawLine(
+                                color = color,
+                                start = Offset(0f, size.height * fraction),
+                                end = Offset(size.width, size.height * fraction),
+                                strokeWidth = stroke,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -291,20 +406,36 @@ private fun FramingEditor(
                         .padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    EditScope.entries.forEach { scope ->
-                        FilterChip(
-                            selected = state.scope == scope,
-                            onClick = { viewModel.setScope(scope) },
-                            label = { Text(stringResource(scopeLabel(scope))) },
-                        )
-                    }
+                Button(
+                    onClick = viewModel::syncToCounterpart,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.sync))
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Switch(checked = angleSnap, onCheckedChange = { angleSnap = it })
+                    Text(text = stringResource(R.string.angle_snap))
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Switch(checked = showGrid, onCheckedChange = { showGrid = it })
+                    Text(text = stringResource(R.string.grid))
                 }
                 FramingControls(
                     framing = framing,
                     dimForLock = asset.dimForLock,
                     surface = key.surface,
-                    scrollPreview = state.scrollPreview,
+                    scrollPreviews =
+                        ScrollPreviews(
+                            start = state.scrollStartPreview,
+                            end = state.scrollEndPreview,
+                            aspect = aspectOf(state, key.display),
+                        ),
                     adjustBackdrop = adjustBackdrop,
                     onAdjustBackdrop = { adjustBackdrop = it },
                     viewModel = viewModel,
@@ -319,7 +450,7 @@ private fun FramingControls(
     framing: Framing,
     dimForLock: Boolean,
     surface: WallpaperSurface,
-    scrollPreview: Float,
+    scrollPreviews: ScrollPreviews,
     adjustBackdrop: Boolean,
     onAdjustBackdrop: (Boolean) -> Unit,
     viewModel: EditorViewModel,
@@ -394,10 +525,9 @@ private fun FramingControls(
     }
 
     if (surface == WallpaperSurface.HOME) {
-        SectionTitle(stringResource(R.string.scroll_behavior))
-        ScrollControls(
+        ScrollSettings(
             framing = framing,
-            scrollPreview = scrollPreview,
+            previews = scrollPreviews,
             viewModel = viewModel,
         )
     }
@@ -425,15 +555,14 @@ private fun FramingControls(
         )
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Button(onClick = viewModel::rotateQuarterTurn) {
-            Text(stringResource(R.string.rotate))
+    if (surface == WallpaperSurface.LOCK) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Switch(checked = dimForLock, onCheckedChange = viewModel::setDimForLock)
+            Text(text = stringResource(R.string.dim_lock))
         }
-        Switch(checked = dimForLock, onCheckedChange = viewModel::setDimForLock)
-        Text(text = stringResource(R.string.dim_lock))
     }
 
     TextButton(onClick = viewModel::reset) {
@@ -441,94 +570,88 @@ private fun FramingControls(
     }
 }
 
+private data class ScrollPreviews(
+    val start: Bitmap?,
+    val end: Bitmap?,
+    val aspect: Float,
+)
+
 @Composable
-private fun ScrollControls(
+private fun ScrollSettings(
     framing: Framing,
-    scrollPreview: Float,
+    previews: ScrollPreviews,
     viewModel: EditorViewModel,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ScrollMode.entries.forEach { mode ->
-            FilterChip(
-                selected = framing.scrollMode == mode,
-                onClick = { viewModel.setScrollMode(mode) },
-                label = { Text(stringResource(scrollModeLabel(mode))) },
-            )
-        }
-    }
-    when (framing.scrollMode) {
-        ScrollMode.OFF -> Unit
-        ScrollMode.AMOUNT -> AmountSlider(framing.scrollAmountPercent, viewModel::setScrollAmount)
-        ScrollMode.PAGES -> {
-            Text(
-                text = stringResource(R.string.scroll_pages_count),
-                style = MaterialTheme.typography.labelLarge,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (pages in 2..5) {
-                    FilterChip(
-                        selected = framing.scrollPages == pages,
-                        onClick = { viewModel.setScrollPages(pages) },
-                        label = { Text(pages.toString()) },
-                    )
-                }
-            }
-        }
-
-        ScrollMode.CUSTOM -> {
-            AmountSlider(framing.scrollAmountPercent, viewModel::setScrollAmount)
-            FractionSlider(
-                label = stringResource(R.string.scroll_start),
-                value = framing.scrollStartFraction,
-                onChange = viewModel::setScrollStart,
-            )
-            FractionSlider(
-                label = stringResource(R.string.scroll_span),
-                value = framing.scrollSpanFraction,
-                onChange = viewModel::setScrollSpan,
-            )
-        }
-    }
-    if (framing.scrollMode != ScrollMode.OFF) {
-        FractionSlider(
-            label = stringResource(R.string.scroll_preview),
-            value = scrollPreview,
-            onChange = viewModel::setScrollPreview,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Switch(
+            checked = framing.scrollMode != ScrollMode.OFF,
+            onCheckedChange = viewModel::setScrollEnabled,
+        )
+        Text(
+            text = stringResource(R.string.scroll_behavior),
+            style = MaterialTheme.typography.labelLarge,
         )
     }
+    if (framing.scrollMode != ScrollMode.OFF) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            PageEdge(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.page_first),
+                preview = previews.start,
+                aspect = previews.aspect,
+                value = framing.scrollStartFraction,
+                onChange = viewModel::setScrollLeft,
+            )
+            PageEdge(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.page_last),
+                preview = previews.end,
+                aspect = previews.aspect,
+                value = (framing.scrollStartFraction + framing.scrollSpanFraction).coerceIn(0f, 1f),
+                onChange = viewModel::setScrollRight,
+            )
+        }
+    }
 }
 
 @Composable
-private fun AmountSlider(
-    percent: Int,
-    onChange: (Int) -> Unit,
-) {
-    Text(
-        text = stringResource(R.string.scroll_amount_percent) + ": " + percent + "%",
-        style = MaterialTheme.typography.labelLarge,
-    )
-    Slider(
-        value = percent.toFloat(),
-        onValueChange = { onChange(it.toInt()) },
-        valueRange = 0f..200f,
-    )
-}
-
-@Composable
-private fun FractionSlider(
+private fun PageEdge(
     label: String,
+    preview: Bitmap?,
+    aspect: Float,
     value: Float,
     onChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Text(
-        text = label + ": " + (value * 100).toInt() + "%",
-        style = MaterialTheme.typography.labelLarge,
-    )
-    Slider(
-        value = value,
-        onValueChange = onChange,
-        valueRange = 0f..1f,
-    )
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(text = label, style = MaterialTheme.typography.labelSmall)
+        Box(
+            modifier = Modifier.fillMaxWidth().height(PAGE_EDGE_HEIGHT),
+            contentAlignment = Alignment.Center,
+        ) {
+            val image = preview?.asImageBitmap()
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.height(PAGE_EDGE_HEIGHT).aspectRatio(aspect),
+                )
+            }
+        }
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = 0f..1f,
+        )
+    }
 }
 
 @Composable
@@ -573,13 +696,6 @@ private fun aspectOf(
     return info.width.toFloat() / info.height
 }
 
-private fun scopeLabel(scope: EditScope): Int =
-    when (scope) {
-        EditScope.HOME -> R.string.surface_home
-        EditScope.LOCK -> R.string.surface_lock
-        EditScope.BOTH -> R.string.surface_both
-    }
-
 private fun surfaceLabel(surface: WallpaperSurface): Int =
     when (surface) {
         WallpaperSurface.HOME -> R.string.surface_home
@@ -600,14 +716,6 @@ private fun fitModeLabel(mode: FitMode): Int =
         FitMode.STRETCH -> R.string.fit_stretch
     }
 
-private fun scrollModeLabel(mode: ScrollMode): Int =
-    when (mode) {
-        ScrollMode.OFF -> R.string.scroll_off
-        ScrollMode.AMOUNT -> R.string.scroll_amount
-        ScrollMode.PAGES -> R.string.scroll_pages
-        ScrollMode.CUSTOM -> R.string.scroll_custom
-    }
-
 private val PALETTE =
     listOf(
         0xFF000000.toInt(),
@@ -622,3 +730,7 @@ private val PALETTE =
 
 private const val STRETCH_MIN = 0.1f
 private const val STRETCH_MAX = 3f
+private const val DOUBLE_TAP_WINDOW_MILLIS = 300L
+private const val TAP_MAX_MILLIS = 300L
+private val MIN_FINGER_DISTANCE = 28.dp
+private val PAGE_EDGE_HEIGHT = 110.dp

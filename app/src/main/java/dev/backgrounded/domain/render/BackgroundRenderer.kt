@@ -130,7 +130,7 @@ class BackgroundRenderer
                         ),
                     sourceWidth = rotatedSource.width,
                     sourceHeight = rotatedSource.height,
-                    outWidth = virtualWidth,
+                    outWidth = viewport.width,
                     outHeight = viewport.height,
                 )
             val sourceRect =
