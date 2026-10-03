@@ -1,0 +1,464 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "b957deb7a91c8019a5f7f7692e280b2f",
+    "entities": [
+      {
+        "tableName": "albums",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `coverBackgroundId` INTEGER, `isHidden` INTEGER NOT NULL, `rotationOrder` TEXT NOT NULL, `scheduleType` TEXT NOT NULL, `intervalMinutes` INTEGER, `fixedTimesCsv` TEXT, `unlockEnabled` INTEGER NOT NULL, `unlockMinMinutes` INTEGER NOT NULL, `unlockEveryN` INTEGER NOT NULL, `unlockMaxPerDay` INTEGER NOT NULL, `lastAppliedBackgroundId` INTEGER, `lastChangedAt` INTEGER NOT NULL, `shuffleRemainingCsv` TEXT, `sortIndex` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "coverBackgroundId",
+            "columnName": "coverBackgroundId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "isHidden",
+            "columnName": "isHidden",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rotationOrder",
+            "columnName": "rotationOrder",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scheduleType",
+            "columnName": "scheduleType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intervalMinutes",
+            "columnName": "intervalMinutes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "fixedTimesCsv",
+            "columnName": "fixedTimesCsv",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "unlockEnabled",
+            "columnName": "unlockEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unlockMinMinutes",
+            "columnName": "unlockMinMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unlockEveryN",
+            "columnName": "unlockEveryN",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unlockMaxPerDay",
+            "columnName": "unlockMaxPerDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastAppliedBackgroundId",
+            "columnName": "lastAppliedBackgroundId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastChangedAt",
+            "columnName": "lastChangedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "shuffleRemainingCsv",
+            "columnName": "shuffleRemainingCsv",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sortIndex",
+            "columnName": "sortIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "backgrounds",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `albumId` INTEGER NOT NULL, `sourceType` TEXT NOT NULL, `storageRef` TEXT NOT NULL, `displayName` TEXT NOT NULL, `sha256` TEXT, `width` INTEGER NOT NULL, `height` INTEGER NOT NULL, `dimForLock` INTEGER NOT NULL, `sortIndex` INTEGER NOT NULL, `addedAt` INTEGER NOT NULL, FOREIGN KEY(`albumId`) REFERENCES `albums`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "albumId",
+            "columnName": "albumId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceType",
+            "columnName": "sourceType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "storageRef",
+            "columnName": "storageRef",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "width",
+            "columnName": "width",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "height",
+            "columnName": "height",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dimForLock",
+            "columnName": "dimForLock",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortIndex",
+            "columnName": "sortIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedAt",
+            "columnName": "addedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_backgrounds_albumId",
+            "unique": false,
+            "columnNames": [
+              "albumId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_backgrounds_albumId` ON `${TABLE_NAME}` (`albumId`)"
+          },
+          {
+            "name": "index_backgrounds_sha256",
+            "unique": false,
+            "columnNames": [
+              "sha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_backgrounds_sha256` ON `${TABLE_NAME}` (`sha256`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "albums",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "albumId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "background_framings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`backgroundId` INTEGER NOT NULL, `target` TEXT NOT NULL, `surface` TEXT NOT NULL, `fitMode` TEXT NOT NULL, `cropLeft` REAL NOT NULL, `cropTop` REAL NOT NULL, `cropWidth` REAL NOT NULL, `cropHeight` REAL NOT NULL, `zoom` REAL NOT NULL, `panX` REAL NOT NULL, `panY` REAL NOT NULL, `rotationDegrees` INTEGER NOT NULL, `backdrop` TEXT NOT NULL, `blurIntensity` INTEGER NOT NULL, `backdropZoom` REAL NOT NULL, `backdropPanX` REAL NOT NULL, `backdropPanY` REAL NOT NULL, `backdropColor` INTEGER NOT NULL, `scrollMode` TEXT NOT NULL, `scrollAmountPercent` INTEGER NOT NULL, `scrollPages` INTEGER NOT NULL, `scrollStartFraction` REAL NOT NULL, `scrollSpanFraction` REAL NOT NULL, PRIMARY KEY(`backgroundId`, `target`, `surface`), FOREIGN KEY(`backgroundId`) REFERENCES `backgrounds`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "backgroundId",
+            "columnName": "backgroundId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "target",
+            "columnName": "target",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "surface",
+            "columnName": "surface",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fitMode",
+            "columnName": "fitMode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropLeft",
+            "columnName": "cropLeft",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropTop",
+            "columnName": "cropTop",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropWidth",
+            "columnName": "cropWidth",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropHeight",
+            "columnName": "cropHeight",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "zoom",
+            "columnName": "zoom",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "panX",
+            "columnName": "panX",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "panY",
+            "columnName": "panY",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rotationDegrees",
+            "columnName": "rotationDegrees",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backdrop",
+            "columnName": "backdrop",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blurIntensity",
+            "columnName": "blurIntensity",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backdropZoom",
+            "columnName": "backdropZoom",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backdropPanX",
+            "columnName": "backdropPanX",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backdropPanY",
+            "columnName": "backdropPanY",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backdropColor",
+            "columnName": "backdropColor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scrollMode",
+            "columnName": "scrollMode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scrollAmountPercent",
+            "columnName": "scrollAmountPercent",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scrollPages",
+            "columnName": "scrollPages",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scrollStartFraction",
+            "columnName": "scrollStartFraction",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scrollSpanFraction",
+            "columnName": "scrollSpanFraction",
+            "affinity": "REAL",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "backgroundId",
+            "target",
+            "surface"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_background_framings_backgroundId",
+            "unique": false,
+            "columnNames": [
+              "backgroundId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_background_framings_backgroundId` ON `${TABLE_NAME}` (`backgroundId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "backgrounds",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "backgroundId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "history",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `backgroundId` INTEGER NOT NULL, `albumId` INTEGER NOT NULL, `appliedAt` INTEGER NOT NULL, `trigger` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backgroundId",
+            "columnName": "backgroundId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "albumId",
+            "columnName": "albumId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAt",
+            "columnName": "appliedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trigger",
+            "columnName": "trigger",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_history_albumId",
+            "unique": false,
+            "columnNames": [
+              "albumId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_history_albumId` ON `${TABLE_NAME}` (`albumId`)"
+          },
+          {
+            "name": "index_history_appliedAt",
+            "unique": false,
+            "columnNames": [
+              "appliedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_history_appliedAt` ON `${TABLE_NAME}` (`appliedAt`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b957deb7a91c8019a5f7f7692e280b2f')"
+    ]
+  }
+}
