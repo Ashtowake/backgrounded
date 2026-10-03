@@ -6,6 +6,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sign
 import kotlin.math.sin
 
 /**
@@ -48,7 +49,16 @@ object GestureTransform {
                 atan2(gesture.start.vectorY, gesture.start.vectorX)
         val fullTurn = 2f * Math.PI.toFloat()
         radians = ((radians + Math.PI.toFloat()) % fullTurn + fullTurn) % fullTurn - Math.PI.toFloat()
-        if (abs(Math.toDegrees(radians.toDouble())) < ROTATION_DEADZONE_DEGREES) radians = 0f
+        val rotationDegrees = Math.toDegrees(radians.toDouble()).toFloat()
+        val magnitude = abs(rotationDegrees)
+        val adjustedDegrees =
+            if (magnitude <= ROTATION_DEADZONE_DEGREES) {
+                0f
+            } else {
+                (magnitude - ROTATION_DEADZONE_DEGREES * ROTATION_DEADZONE_DEGREES / magnitude) *
+                    sign(rotationDegrees)
+            }
+        radians = Math.toRadians(adjustedDegrees.toDouble()).toFloat()
         val cosTheta = cos(radians).toFloat()
         val sinTheta = sin(radians).toFloat()
 

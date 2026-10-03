@@ -40,7 +40,7 @@ class GestureTransformTest {
     }
 
     @Test
-    fun `rotation maps the finger vector exactly`() {
+    fun `rotation follows the finger vector`() {
         val settled =
             GestureTransform.settle(
                 startFraming = Framing.DEFAULT,
@@ -50,7 +50,7 @@ class GestureTransformTest {
                         current = fingerPair(centroidX = 400f, vectorX = 0f, vectorY = 200f),
                     ),
             )
-        assertEquals(90, settled.rotationDegrees)
+        assertEquals(89, settled.rotationDegrees)
         assertEquals(0f, settled.panX, 0.0001f)
         assertEquals(0f, settled.panY, 0.0001f)
     }
@@ -67,6 +67,24 @@ class GestureTransformTest {
                     ),
             )
         assertEquals(0, settled.rotationDegrees)
+    }
+
+    @Test
+    fun `rotation ramps out of the deadzone without jumping to its full value`() {
+        val start = fingerPair(centroidX = 400f, vectorX = 200f, vectorY = 0f)
+        val justOver =
+            GestureTransform.settle(
+                startFraming = Framing.DEFAULT,
+                gesture = gesture(start = start, current = rotatedVector(degrees = 12f)),
+            )
+        assertEquals(4, justOver.rotationDegrees)
+
+        val wellOver =
+            GestureTransform.settle(
+                startFraming = Framing.DEFAULT,
+                gesture = gesture(start = start, current = rotatedVector(degrees = 30f)),
+            )
+        assertEquals(27, wellOver.rotationDegrees)
     }
 
     @Test
@@ -131,6 +149,16 @@ class GestureTransformTest {
             vectorX = vectorX,
             vectorY = vectorY,
         )
+
+    private fun rotatedVector(degrees: Float): GestureTransform.FingerPair {
+        val radians = Math.toRadians(degrees.toDouble())
+        val radius = 200.0
+        return fingerPair(
+            centroidX = 400f,
+            vectorX = (radius * kotlin.math.cos(radians)).toFloat(),
+            vectorY = (radius * kotlin.math.sin(radians)).toFloat(),
+        )
+    }
 
     private companion object {
         const val FRAME_SIZE = 800f
