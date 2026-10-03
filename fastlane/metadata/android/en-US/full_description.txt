@@ -1,0 +1,16 @@
+Backgrounded is a live-wallpaper album rotator.
+
+Features:
+- Schedule changes by interval or fixed times
+- Change on unlock with per-album limits
+- Multiple albums with per-image framing: fill, fit, background fill (blurred or solid) and stretch
+- Scroll range and lock-screen dimming per image
+- Home-screen double tap on the wallpaper with a configurable action
+- Quick Settings tile and launcher shortcuts
+- Widget with configurable icon, opacity and transparent (invisible) mode
+- Hidden albums that require device authentication to reveal
+- Export and import of the configuration
+
+The app declares no permissions, has no network code and never modifies the original images.
+Apply the live wallpaper once through the system wallpaper picker (Wallpaper & style -> Live
+wallpapers -> Backgrounded).

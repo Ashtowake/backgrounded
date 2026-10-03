@@ -1,0 +1,24 @@
+# Android / Gradle
+.gradle/
+.kotlin/
+local.properties
+**/build/
+**/captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE and local agent configuration
+.idea/
+*.iml
+.kilo/
+
+# Signing material and local secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Generated packages and crash dumps
+*.apk
+*.aab
+*.hprof
+.DS_Store

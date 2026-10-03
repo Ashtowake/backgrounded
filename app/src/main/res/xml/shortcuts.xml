@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_next"
+        android:shortcutId="next"
+        android:shortcutShortLabel="@string/shortcut_next">
+        <intent
+            android:action="dev.backgrounded.action.NEXT"
+            android:targetClass="dev.backgrounded.shortcuts.ActionTrampolineActivity"
+            android:targetPackage="dev.backgrounded" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_previous"
+        android:shortcutId="previous"
+        android:shortcutShortLabel="@string/shortcut_previous">
+        <intent
+            android:action="dev.backgrounded.action.PREVIOUS"
+            android:targetClass="dev.backgrounded.shortcuts.ActionTrampolineActivity"
+            android:targetPackage="dev.backgrounded" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_album"
+        android:shortcutId="next_album"
+        android:shortcutShortLabel="@string/shortcut_next_album">
+        <intent
+            android:action="dev.backgrounded.action.NEXT_ALBUM"
+            android:targetClass="dev.backgrounded.shortcuts.ActionTrampolineActivity"
+            android:targetPackage="dev.backgrounded" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_pause"
+        android:shortcutId="toggle_pause"
+        android:shortcutShortLabel="@string/shortcut_toggle_pause">
+        <intent
+            android:action="dev.backgrounded.action.TOGGLE_PAUSE"
+            android:targetClass="dev.backgrounded.shortcuts.ActionTrampolineActivity"
+            android:targetPackage="dev.backgrounded" />
+    </shortcut>
+</shortcuts>
