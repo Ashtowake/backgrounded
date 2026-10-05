@@ -8,10 +8,12 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.data.db.BackgroundedDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
 import javax.inject.Singleton
 
 @Module
@@ -21,6 +23,7 @@ object AppModule {
     @Singleton
     fun database(
         @ApplicationContext context: Context,
+        settingsStore: SettingsStore,
     ): BackgroundedDatabase =
         Room.databaseBuilder(context, BackgroundedDatabase::class.java, "backgrounded.db")
             .addMigrations(
@@ -30,6 +33,13 @@ object AppModule {
                 BackgroundedDatabase.MIGRATION_4_5,
                 BackgroundedDatabase.MIGRATION_5_6,
                 BackgroundedDatabase.MIGRATION_6_7,
+                BackgroundedDatabase.MIGRATION_7_8,
+                BackgroundedDatabase.MIGRATION_8_9,
+                BackgroundedDatabase.MIGRATION_9_10,
+                BackgroundedDatabase.MIGRATION_10_11,
+                BackgroundedDatabase.crossfadeMigration {
+                    runBlocking(Dispatchers.IO) { settingsStore.legacyCrossfade() }
+                },
             )
             .build()
 

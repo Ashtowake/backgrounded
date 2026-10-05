@@ -14,6 +14,7 @@ import dev.backgrounded.domain.model.DoubleTapMode
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.domain.model.UnlockState
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -64,19 +65,15 @@ class SettingsStore
             prefs[Keys.DOUBLE_TAP_ACTION] = action.name
         }
 
-        suspend fun setCrossfade(enabled: Boolean) =
-            edit { prefs ->
-                prefs[Keys.CROSSFADE] = enabled
-            }
+        /** Read only when upgrading global crossfade preferences to album columns. */
+        suspend fun legacyCrossfade(): Pair<Boolean, Int> {
+            val prefs = context.settingsDataStore.data.first()
+            return (prefs[Keys.CROSSFADE] ?: true) to (prefs[Keys.CROSSFADE_DURATION] ?: 800)
+        }
 
         suspend fun setLockDimDefault(enabled: Boolean) =
             edit { prefs ->
                 prefs[Keys.LOCK_DIM_DEFAULT] = enabled
-            }
-
-        suspend fun setCrossfadeDuration(durationMs: Int) =
-            edit { prefs ->
-                prefs[Keys.CROSSFADE_DURATION] = durationMs.coerceIn(Keys.MIN_FADE_MS, Keys.MAX_FADE_MS)
             }
 
         suspend fun setExternalControl(enabled: Boolean) =
@@ -118,10 +115,20 @@ class SettingsStore
                 prefs[Keys.LAST_ERROR] = message ?: ""
             }
 
+        suspend fun setHideSourcesSystemwide(enabled: Boolean) = edit { it[Keys.HIDE_SOURCES] = enabled }
+
+        suspend fun setAuthenticateHiddenSwitch(enabled: Boolean) =
+            edit { it[Keys.AUTHENTICATE_HIDDEN_SWITCH] = enabled }
+
+        suspend fun setEncryptHidden(enabled: Boolean) = edit { it[Keys.ENCRYPT_HIDDEN] = enabled }
+
+        suspend fun setDebugDiagnostics(enabled: Boolean) = edit { it[Keys.DEBUG_DIAGNOSTICS] = enabled }
+
         private suspend fun edit(transform: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
             context.settingsDataStore.edit(transform)
         }
 
+        @Suppress("CyclomaticComplexMethod")
         private fun Preferences.toSettings(): Settings =
             Settings(
                 activeAlbumId = this[Keys.ACTIVE_ALBUM]?.takeIf { it != Keys.UNSET },
@@ -138,9 +145,7 @@ class SettingsStore
                 doubleTapEnabled = this[Keys.DOUBLE_TAP_ENABLED] ?: true,
                 doubleTapMode = DoubleTapMode.from(this[Keys.DOUBLE_TAP_MODE]),
                 doubleTapAction = GestureAction.from(this[Keys.DOUBLE_TAP_ACTION]),
-                crossfadeEnabled = this[Keys.CROSSFADE] ?: true,
-                crossfadeDurationMs = this[Keys.CROSSFADE_DURATION] ?: 800,
-                lockDimDefault = this[Keys.LOCK_DIM_DEFAULT] ?: true,
+                lockDimDefault = this[Keys.LOCK_DIM_DEFAULT] ?: false,
                 externalControlEnabled = this[Keys.EXTERNAL_CONTROL] ?: false,
                 widgetIconSource = this[Keys.WIDGET_ICON_SOURCE] ?: "builtin:next",
                 widgetIconAlpha = this[Keys.WIDGET_ICON_ALPHA] ?: 255,
@@ -152,6 +157,10 @@ class SettingsStore
                 liveWallpaperLock = this[Keys.LIVE_WALLPAPER_LOCK] ?: false,
                 nextTriggerAt = this[Keys.NEXT_TRIGGER_AT] ?: 0L,
                 lastError = this[Keys.LAST_ERROR]?.takeIf { it.isNotEmpty() },
+                hideSourcesSystemwide = this[Keys.HIDE_SOURCES] ?: false,
+                authenticateHiddenSwitch = this[Keys.AUTHENTICATE_HIDDEN_SWITCH] ?: true,
+                encryptHidden = this[Keys.ENCRYPT_HIDDEN] ?: false,
+                debugDiagnostics = this[Keys.DEBUG_DIAGNOSTICS] ?: false,
             )
 
         private object Keys {
@@ -180,9 +189,11 @@ class SettingsStore
             val LIVE_WALLPAPER_LOCK = booleanPreferencesKey("live_wallpaper_lock")
             val NEXT_TRIGGER_AT = longPreferencesKey("next_trigger_at")
             val LAST_ERROR = stringPreferencesKey("last_error")
+            val HIDE_SOURCES = booleanPreferencesKey("hide_sources_systemwide")
+            val AUTHENTICATE_HIDDEN_SWITCH = booleanPreferencesKey("authenticate_hidden_switch")
+            val ENCRYPT_HIDDEN = booleanPreferencesKey("encrypt_hidden")
+            val DEBUG_DIAGNOSTICS = booleanPreferencesKey("debug_diagnostics")
 
             const val UNSET = -1L
-            const val MIN_FADE_MS = 100
-            const val MAX_FADE_MS = 3000
         }
     }

@@ -8,9 +8,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.backgrounded.core.diagnostics.LocalDiagnostics
+import dev.backgrounded.core.security.EncryptedImageStore
+import dev.backgrounded.core.security.PinVault
 import dev.backgrounded.data.backup.BackupManager
 import dev.backgrounded.data.datastore.Settings
 import dev.backgrounded.data.datastore.SettingsStore
+import dev.backgrounded.data.db.BackgroundedDatabase
+import dev.backgrounded.data.importer.ManagedFolderStore
+import dev.backgrounded.data.importer.ManagedSourceMover
 import dev.backgrounded.domain.model.DoubleTapMode
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.domain.usecase.TogglePause
@@ -24,6 +30,7 @@ import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
+@Suppress("LongParameterList")
 class SettingsViewModel
     @Inject
     constructor(
@@ -31,10 +38,113 @@ class SettingsViewModel
         private val settingsStore: SettingsStore,
         private val togglePauseUseCase: TogglePause,
         private val backupManager: BackupManager,
+        private val managedFolderStore: ManagedFolderStore,
+        private val encryptedImageStore: EncryptedImageStore,
+        private val pinVault: PinVault,
+        private val diagnostics: LocalDiagnostics,
+        private val db: BackgroundedDatabase,
+        private val sourceMover: ManagedSourceMover,
     ) : ViewModel() {
         val settings: StateFlow<Settings> =
             settingsStore.settings
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), Settings.DEFAULTS)
+
+        val managedFolders: StateFlow<Set<String>> = managedFolderStore.folders
+
+        val unresolvedFiles =
+            db.managedSourceDao().observeUnresolved()
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+
+        fun retryRestoration(onResult: (List<String>) -> Unit) {
+            viewModelScope.launch {
+                val albumIds =
+                    unresolvedFiles.value.mapNotNull { db.backgroundDao().get(it.assetId)?.albumId }
+                        .distinct().filter { db.albumDao().get(it)?.isHidden == false }
+                onResult(albumIds.flatMap { sourceMover.restoreAlbum(it) })
+            }
+        }
+
+        fun grantFolder(uri: Uri): Boolean = managedFolderStore.grant(uri)
+
+        fun hasFolderWrite(uri: Uri): Boolean = managedFolderStore.hasWrite(uri)
+
+        fun revokeFolder(uri: Uri) = managedFolderStore.revoke(uri)
+
+        fun setHideSources(enabled: Boolean) =
+            viewModelScope.launch {
+                settingsStore.setHideSourcesSystemwide(enabled)
+            }
+
+        fun setAuthenticateHiddenSwitch(enabled: Boolean) =
+            viewModelScope.launch { settingsStore.setAuthenticateHiddenSwitch(enabled) }
+
+        fun pinConfigured() = pinVault.configured()
+
+        fun systemConfigured() = pinVault.biometricConfigured()
+
+        fun prepareSystemKey() = pinVault.prepareSystemKey()
+
+        fun removePin() = pinVault.removePin()
+
+        fun unlockWithSystem() = pinVault.unlockWithSystem()
+
+        fun pinUnlocked() = pinVault.unlocked()
+
+        fun setupPin(
+            pin: String,
+            recovery: Boolean,
+        ) = pinVault.setup(pin, recovery)
+
+        fun unlockPin(pin: String) = pinVault.unlock(pin)
+
+        fun pinRecoveryEnabled() = pinVault.recoveryEnabled()
+
+        fun recoverPin() = pinVault.recover()
+
+        fun setEncryptHidden(
+            enabled: Boolean,
+            onResult: (Boolean) -> Unit,
+        ) = viewModelScope.launch {
+            val success =
+                if (enabled) {
+                    encryptedImageStore.encryptHiddenAlbums()
+                } else {
+                    encryptedImageStore.decryptHiddenAlbums()
+                }
+            if (success) {
+                settingsStore.setEncryptHidden(enabled)
+            } else {
+                if (enabled) {
+                    encryptedImageStore.decryptHiddenAlbums()
+                } else {
+                    encryptedImageStore.encryptHiddenAlbums()
+                }
+            }
+            onResult(success)
+        }
+
+        fun setDebugDiagnostics(enabled: Boolean) =
+            viewModelScope.launch {
+                settingsStore.setDebugDiagnostics(enabled)
+            }
+
+        fun exportDiagnostics(
+            uri: Uri,
+            onResult: (Boolean) -> Unit,
+        ) {
+            viewModelScope.launch {
+                val success =
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            context.contentResolver.openOutputStream(uri)?.use { output ->
+                                output.write(diagnostics.export().toByteArray())
+                                true
+                            } ?: false
+                        }.getOrDefault(false)
+                    }
+                onResult(success)
+            }
+        }
 
         fun togglePause() = viewModelScope.launch { togglePauseUseCase() }
 
@@ -59,19 +169,9 @@ class SettingsViewModel
             }
         }
 
-        fun setCrossfade(enabled: Boolean) =
-            viewModelScope.launch {
-                settingsStore.setCrossfade(enabled)
-            }
-
         fun setLockDimDefault(enabled: Boolean) =
             viewModelScope.launch {
                 settingsStore.setLockDimDefault(enabled)
-            }
-
-        fun setCrossfadeDuration(durationMs: Int) =
-            viewModelScope.launch {
-                settingsStore.setCrossfadeDuration(durationMs)
             }
 
         fun setExternalControl(enabled: Boolean) {

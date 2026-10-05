@@ -13,6 +13,7 @@ import dev.backgrounded.domain.model.NormalizedCrop
 import dev.backgrounded.domain.model.RotationOrder
 import dev.backgrounded.domain.model.ScheduleType
 import dev.backgrounded.domain.model.ScrollMode
+import dev.backgrounded.domain.model.SlideMode
 import dev.backgrounded.domain.model.SourceType
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.model.UnlockPolicy
@@ -42,6 +43,12 @@ fun AlbumEntity.toModel(): Album =
         lastChangedAt = lastChangedAt,
         shuffleRemaining = shuffleRemainingCsv.toIdList(),
         sortIndex = sortIndex,
+        rotationEnabled = rotationEnabled,
+        intervalSeconds = intervalSeconds,
+        slideMode = SlideMode.from(slideMode),
+        slideSpeedPxPerSecond = slideSpeedPxPerSecond,
+        crossfadeEnabled = crossfadeEnabled,
+        crossfadeDurationMs = crossfadeDurationMs,
     )
 
 fun Album.toEntity(): AlbumEntity =
@@ -64,6 +71,12 @@ fun Album.toEntity(): AlbumEntity =
         lastChangedAt = lastChangedAt,
         shuffleRemainingCsv = shuffleRemaining.joinToString(separator = ","),
         sortIndex = sortIndex,
+        rotationEnabled = rotationEnabled,
+        intervalSeconds = intervalSeconds,
+        slideMode = slideMode.name,
+        slideSpeedPxPerSecond = slideSpeedPxPerSecond,
+        crossfadeEnabled = crossfadeEnabled,
+        crossfadeDurationMs = crossfadeDurationMs,
     )
 
 fun BackgroundPairEntity.toModel(images: Map<Long, Background>): BackgroundPair? {
@@ -141,6 +154,8 @@ fun BackgroundFramingEntity.toModel(): Framing =
         scrollSpanFraction = scrollSpanFraction,
         gyroParallax = gyroParallax,
         gyroIntensity = gyroIntensity,
+        mirrorX = mirrorX,
+        mirrorY = mirrorY,
     )
 
 fun Framing.toEntity(
@@ -175,6 +190,8 @@ fun Framing.toEntity(
         scrollSpanFraction = scrollSpanFraction,
         gyroParallax = gyroParallax,
         gyroIntensity = gyroIntensity,
+        mirrorX = mirrorX,
+        mirrorY = mirrorY,
     )
 
 fun Background.framingEntities(): List<BackgroundFramingEntity> =

@@ -6,12 +6,17 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.backgrounded.MainActivity
+import dev.backgrounded.core.security.HiddenSwitchAuthActivity
+import dev.backgrounded.core.security.HiddenSwitchOperation
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
+import dev.backgrounded.domain.usecase.HiddenAlbumSwitchPolicy
 import dev.backgrounded.domain.usecase.NextAlbum
+import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -30,6 +35,9 @@ class ActionTrampolineActivity : ComponentActivity() {
     lateinit var nextAlbum: NextAlbum
 
     @Inject
+    lateinit var hiddenSwitchPolicy: HiddenAlbumSwitchPolicy
+
+    @Inject
     lateinit var togglePause: TogglePause
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,7 +52,11 @@ class ActionTrampolineActivity : ComponentActivity() {
         when (intent?.action) {
             ACTION_NEXT -> applyNextBackground(Trigger.EXTERNAL)
             ACTION_PREVIOUS -> applyPreviousBackground(Trigger.EXTERNAL)
-            ACTION_NEXT_ALBUM -> nextAlbum(Trigger.EXTERNAL)
+            ACTION_NEXT_ALBUM -> {
+                if (nextAlbum(Trigger.EXTERNAL) == NextAlbumResult.AUTH_REQUIRED) {
+                    startActivity(HiddenSwitchAuthActivity.intent(this, Trigger.EXTERNAL))
+                }
+            }
             ACTION_TOGGLE_PAUSE -> togglePause()
             ACTION_OPEN_APP ->
                 startActivity(
@@ -53,8 +65,20 @@ class ActionTrampolineActivity : ComponentActivity() {
             ACTION_SET_ALBUM -> {
                 val albumId = intent.getLongExtra(EXTRA_ALBUM_ID, -1L)
                 if (albumId > 0) {
-                    settingsStore.setActiveAlbum(albumId)
-                    applyNextBackground(Trigger.EXTERNAL, albumIdOverride = albumId)
+                    val activeId = settingsStore.settings.first().activeAlbumId
+                    if (activeId != albumId && hiddenSwitchPolicy.requiresAuthentication(albumId)) {
+                        startActivity(
+                            HiddenSwitchAuthActivity.intent(
+                                this,
+                                Trigger.EXTERNAL,
+                                albumId,
+                                HiddenSwitchOperation.APPLY_NEXT,
+                            ),
+                        )
+                    } else {
+                        settingsStore.setActiveAlbum(albumId)
+                        applyNextBackground(Trigger.EXTERNAL, albumIdOverride = albumId)
+                    }
                 }
             }
         }

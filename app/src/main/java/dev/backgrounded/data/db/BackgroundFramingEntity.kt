@@ -46,4 +46,6 @@ data class BackgroundFramingEntity(
     val scrollSpanFraction: Float,
     @ColumnInfo(defaultValue = "0") val gyroParallax: Boolean,
     @ColumnInfo(defaultValue = "50") val gyroIntensity: Int,
+    @ColumnInfo(defaultValue = "0") val mirrorX: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val mirrorY: Boolean = false,
 )

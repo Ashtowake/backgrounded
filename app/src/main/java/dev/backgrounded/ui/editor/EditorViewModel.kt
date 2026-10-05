@@ -125,6 +125,10 @@ class EditorViewModel
 
         fun setBackdropColor(color: Int) = updateFraming { it.copy(backdropColor = color) }
 
+        fun setMirrorX(enabled: Boolean) = updateFraming { it.copy(mirrorX = enabled) }
+
+        fun setMirrorY(enabled: Boolean) = updateFraming { it.copy(mirrorY = enabled) }
+
         fun setScrollEnabled(enabled: Boolean) =
             updateFraming { framing ->
                 if (enabled) {
@@ -274,8 +278,8 @@ class EditorViewModel
             )
         }
 
-        /** Double tap: close any gaps by covering the frame, keeping the existing framing. */
-        fun alignAndFill() {
+        /** Double tap: align the current placement while retaining manual size and fit mode. */
+        fun align() {
             val state = mutableState.value
             val pair = state.pair ?: return
             val key = state.expandedKey ?: return
@@ -288,21 +292,12 @@ class EditorViewModel
                 val rotatedWidth = if (rotated) source.height else source.width
                 val rotatedHeight = if (rotated) source.width else source.height
                 updateFraming { current ->
-                    val scroll =
-                        if (key.surface == WallpaperSurface.HOME) {
-                            ScrollGeometry.scrollFor(current, viewportWidth)
-                        } else {
-                            ScrollGeometry.Scroll(0, 0f, 1f)
-                        }
-                    val bandStart = ScrollGeometry.translationPixels(scroll, 0f, allowScroll = true)
-                    val bandEnd = ScrollGeometry.translationPixels(scroll, 1f, allowScroll = true)
-                    FillAligner.fill(
+                    FillAligner.align(
                         framing = current,
                         outWidth = viewportWidth,
                         outHeight = viewportHeight,
                         sourceWidth = rotatedWidth,
                         sourceHeight = rotatedHeight,
-                        coverageWidth = viewportWidth + (bandEnd - bandStart),
                     )
                 }
             }

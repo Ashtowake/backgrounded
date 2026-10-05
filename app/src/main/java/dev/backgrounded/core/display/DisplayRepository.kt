@@ -7,7 +7,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.backgrounded.domain.model.DisplayTarget
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 data class DisplayTargetInfo(
     val target: DisplayTarget,
@@ -18,9 +19,8 @@ data class DisplayTargetInfo(
 /**
  * Classifies the device's panels as inner (larger, near-square) and cover (smaller, tall).
  *
- * Foldables only expose the currently enabled logical display to apps, so panels are
- * remembered by their stable [Display.getUniqueId] and merged with whatever is enabled now.
- * A panel seen for the first time is classified by aspect ratio until both sizes are known.
+ * Foldables can expose only the currently enabled logical display to apps. Physical mode
+ * sizes from enabled displays are remembered; wallpaper surface sizes are never panel sizes.
  */
 @Singleton
 class DisplayRepository
@@ -32,51 +32,42 @@ class DisplayRepository
         private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         private val knownPanels = load()
 
+        init {
+            persist()
+        }
+
         fun targets(): List<DisplayTargetInfo> {
             refreshFromEnabledDisplays()
             val sizes = knownPanels.values.distinct()
             if (sizes.isEmpty()) return listOf(DisplayTargetInfo(DisplayTarget.INNER, 0, 0))
-
-            val sorted = sizes.sortedByDescending { it.first.toLong() * it.second }
-            val largest = sorted.first()
-            val second = sorted.getOrNull(1)
-
-            if (second == null && aspectOf(largest) < FOLD_ASPECT_THRESHOLD) {
-                return listOf(DisplayTargetInfo(DisplayTarget.COVER, largest.first, largest.second))
+            val inner =
+                sizes.filter { aspectOf(it) >= FOLD_ASPECT_THRESHOLD }
+                    .maxByOrNull { it.first.toLong() * it.second }
+            val cover =
+                sizes.filter { aspectOf(it) < FOLD_ASPECT_THRESHOLD }
+                    .maxByOrNull { it.first.toLong() * it.second }
+            return buildList {
+                if (inner != null) add(DisplayTargetInfo(DisplayTarget.INNER, inner.first, inner.second))
+                if (cover != null) add(DisplayTargetInfo(DisplayTarget.COVER, cover.first, cover.second))
             }
-
-            val result = mutableListOf(DisplayTargetInfo(DisplayTarget.INNER, largest.first, largest.second))
-            if (second != null) {
-                result += DisplayTargetInfo(DisplayTarget.COVER, second.first, second.second)
-            }
-            return result
         }
 
         fun targetForSurface(
             width: Int,
             height: Int,
         ): DisplayTarget {
-            val targets = targets()
-            val fallback = targets.firstOrNull()?.target ?: DisplayTarget.INNER
-            if (targets.size < 2 || width <= 0 || height <= 0) return fallback
-            targets.firstOrNull { it.width == width && it.height == height }?.let { return it.target }
-            val surfaceAspect = width.toFloat() / height
-            return targets
-                .minByOrNull { info ->
-                    if (info.height <= 0) return@minByOrNull Float.MAX_VALUE
-                    abs(surfaceAspect - info.width.toFloat() / info.height)
-                }?.target ?: fallback
+            if (width <= 0 || height <= 0) return targets().firstOrNull()?.target ?: DisplayTarget.INNER
+            return if (min(width, height).toFloat() / max(width, height) < FOLD_ASPECT_THRESHOLD) {
+                DisplayTarget.COVER
+            } else {
+                DisplayTarget.INNER
+            }
         }
 
-        /** Records a surface size reported by the wallpaper engine so unseen panels are learned. */
-        fun rememberSurfaceSize(
-            width: Int,
-            height: Int,
-        ) {
-            if (width <= 0 || height <= 0) return
-            if (knownPanels.values.any { it.first == width && it.second == height }) return
-            knownPanels["$SURFACE_PREFIX$width" + "x" + height] = width to height
-            persist()
+        fun activeTarget(): DisplayTarget {
+            val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
+            val size = display?.let(::displaySize) ?: return targets().firstOrNull()?.target ?: DisplayTarget.INNER
+            return targetForSurface(size.first, size.second)
         }
 
         private fun refreshFromEnabledDisplays() {
@@ -117,7 +108,8 @@ class DisplayRepository
             return null
         }
 
-        private fun aspectOf(size: Pair<Int, Int>): Float = size.first.toFloat() / size.second
+        private fun aspectOf(size: Pair<Int, Int>): Float =
+            min(size.first, size.second).toFloat() / max(size.first, size.second)
 
         private fun load(): MutableMap<String, Pair<Int, Int>> {
             val stored = preferences.getStringSet(KEY_PANELS, emptySet()).orEmpty()
@@ -129,6 +121,7 @@ class DisplayRepository
                     val width = dimensions.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
                     val height = dimensions.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
                     if (width <= 0 || height <= 0) return@mapNotNull null
+                    if (!parts[0].startsWith(DISPLAY_PREFIX)) return@mapNotNull null
                     parts[0] to (width to height)
                 }
                 .toMap()
@@ -150,7 +143,6 @@ class DisplayRepository
             const val PREFERENCES = "display_panels"
             const val KEY_PANELS = "panels"
             const val DISPLAY_PREFIX = "display:"
-            const val SURFACE_PREFIX = "surface:"
             const val CATEGORY_ALL_INCLUDING_DISABLED =
                 "android.hardware.display.category.ALL_INCLUDING_DISABLED"
             const val FOLD_ASPECT_THRESHOLD = 0.7f

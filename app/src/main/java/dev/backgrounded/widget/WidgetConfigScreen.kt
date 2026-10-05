@@ -2,6 +2,7 @@ package dev.backgrounded.widget
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,8 +56,12 @@ fun WidgetConfigScreen(
         Text(text = stringResource(R.string.widget_configure), style = MaterialTheme.typography.titleMedium)
 
         Text(text = stringResource(R.string.widget_icon), style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             listOf(
+                "builtin:app" to R.string.app_name,
                 "builtin:next" to R.string.icon_next,
                 "builtin:previous" to R.string.icon_previous,
                 "builtin:album" to R.string.icon_album,
@@ -108,7 +113,10 @@ fun WidgetConfigScreen(
         )
 
         Text(text = stringResource(R.string.widget_pinned_album), style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             FilterChip(
                 selected = state.pinnedAlbumId == null,
                 onClick = { viewModel.setPinnedAlbum(null) },

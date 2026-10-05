@@ -1,5 +1,9 @@
 package dev.backgrounded.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
@@ -13,14 +17,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -29,16 +35,22 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.backgrounded.BuildConfig
 import dev.backgrounded.R
+import dev.backgrounded.core.security.DeviceCredentialGate
+import dev.backgrounded.core.security.SystemAuthentication
 import dev.backgrounded.domain.model.DoubleTapMode
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.ui.components.LabelValueRow
@@ -53,9 +65,74 @@ fun SettingsScreen(
 ) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val managedFolders by viewModel.managedFolders.collectAsStateWithLifecycle()
+    val unresolvedFiles by viewModel.unresolvedFiles.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var pendingEncryption by remember { mutableStateOf<Boolean?>(null) }
+    var pendingPinSetup by remember { mutableStateOf(false) }
+    var pendingSystemSetup by remember { mutableStateOf(false) }
+    var pendingPinRemoval by remember { mutableStateOf(false) }
+    var pendingHideSources by remember { mutableStateOf(false) }
+    var pinValue by remember { mutableStateOf("") }
+    var pinConfirm by remember { mutableStateOf("") }
+    var pinRecovery by remember { mutableStateOf(false) }
+    var pinError by remember { mutableStateOf(false) }
+    var fullAccessGranted by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+    LifecycleResumeEffect(Unit) {
+        fullAccessGranted = Environment.isExternalStorageManager()
+        onPauseOrDispose { }
+    }
+    val authenticateSystem: (String, (Boolean) -> Unit) -> Unit = { title, onResult ->
+        if (viewModel.prepareSystemKey()) {
+            SystemAuthentication.authenticate(context, title, onResult)
+        } else {
+            scope.launch { snackbarHostState.showSnackbar("Could not prepare system authentication") }
+            onResult(false)
+        }
+    }
+    val pinCredentialLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                val enabled = pendingEncryption
+                val authenticated =
+                    if (viewModel.pinConfigured()) {
+                        viewModel.recoverPin()
+                    } else {
+                        viewModel.setupPin(pinValue, true)
+                    }
+                if (authenticated && enabled == null) {
+                    pendingPinSetup = false
+                    pinValue = ""
+                    pinConfirm = ""
+                    if (pendingSystemSetup) {
+                        pendingSystemSetup = false
+                        authenticateSystem("Enable system authentication") { success ->
+                            if (success && !viewModel.unlockWithSystem()) {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "Could not enable system authentication",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (enabled != null && authenticated) {
+                    viewModel.setEncryptHidden(enabled) { success ->
+                        if (success) {
+                            pendingEncryption = null
+                            pinValue = ""
+                            pinConfirm = ""
+                        } else {
+                            pinError = true
+                        }
+                    }
+                } else {
+                    pinError = true
+                }
+            }
+        }
 
     val exportLauncher =
         rememberLauncherForActivityResult(
@@ -66,6 +143,19 @@ fun SettingsScreen(
                     scope.launch {
                         snackbarHostState.showSnackbar(
                             context.getString(if (success) R.string.export_finished else R.string.import_failed),
+                        )
+                    }
+                }
+            }
+        }
+
+    val diagnosticsExportLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            uri?.let {
+                viewModel.exportDiagnostics(it) { success ->
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            if (success) "Diagnostics exported" else "Export failed",
                         )
                     }
                 }
@@ -85,6 +175,17 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
+
+    val grantFolderLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null && !viewModel.grantFolder(uri)) {
+                scope.launch { snackbarHostState.showSnackbar("Folder write access was not granted") }
+            }
+        }
+    val fullAccessLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            fullAccessGranted = Environment.isExternalStorageManager()
         }
 
     Scaffold(
@@ -167,17 +268,6 @@ fun SettingsScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(
-                    checked = settings.crossfadeEnabled,
-                    onCheckedChange = viewModel::setCrossfade,
-                )
-                Text(
-                    text = stringResource(R.string.crossfade),
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(
                     checked = settings.lockDimDefault,
                     onCheckedChange = viewModel::setLockDimDefault,
                 )
@@ -186,18 +276,6 @@ fun SettingsScreen(
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-
-            Text(
-                text =
-                    stringResource(R.string.crossfade_duration) +
-                        ": " + settings.crossfadeDurationMs + " ms",
-                style = MaterialTheme.typography.labelLarge,
-            )
-            Slider(
-                value = settings.crossfadeDurationMs.toFloat(),
-                onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) },
-                valueRange = 100f..3000f,
-            )
 
             SectionTitle(stringResource(R.string.history))
             TextButton(onClick = onOpenHistory) {
@@ -211,6 +289,118 @@ fun SettingsScreen(
                 }
                 Button(onClick = { importLauncher.launch(arrayOf("application/json")) }) {
                     Text(stringResource(R.string.import_config))
+                }
+            }
+
+            SectionTitle("Hidden album access")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = settings.authenticateHiddenSwitch,
+                    onCheckedChange = viewModel::setAuthenticateHiddenSwitch,
+                )
+                Text("Authenticate when switching to a hidden album", modifier = Modifier.padding(start = 8.dp))
+            }
+            if (!viewModel.pinConfigured()) {
+                TextButton(onClick = { pendingPinSetup = true }) { Text("Add optional PIN") }
+            }
+            if (viewModel.pinConfigured() && viewModel.systemConfigured()) {
+                TextButton(onClick = { pendingPinRemoval = true }) { Text("Remove optional PIN") }
+            }
+            if (SystemAuthentication.available(context) && !viewModel.systemConfigured()) {
+                TextButton(onClick = {
+                    if (viewModel.pinConfigured() && !viewModel.pinUnlocked()) {
+                        pendingSystemSetup = true
+                    } else {
+                        authenticateSystem("Enable system authentication") { authenticated ->
+                            if (authenticated && !viewModel.unlockWithSystem()) {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "Could not enable system authentication",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }) { Text("Use fingerprint or device credential") }
+            }
+            SectionTitle("File access")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { grantFolderLauncher.launch(null) }) { Text("Grant folder") }
+                Button(onClick = {
+                    val intent =
+                        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                            .setData(Uri.parse("package:${context.packageName}"))
+                    fullAccessLauncher.launch(intent)
+                }) { Text(if (fullAccessGranted) "Full access granted" else "Grant full access") }
+            }
+            Text("Full access covers local shared files. Folder access also supports selected document providers.")
+            managedFolders.forEach { folder ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        (Uri.parse(folder).lastPathSegment ?: folder) +
+                            if (viewModel.hasFolderWrite(Uri.parse(folder))) "" else " (grant expired)",
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { viewModel.revokeFolder(Uri.parse(folder)) }) { Text("Revoke") }
+                }
+            }
+            unresolvedFiles.forEach { file ->
+                Text(
+                    "Source needs attention: ${file.originalName}",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (unresolvedFiles.isNotEmpty()) {
+                TextButton(onClick = {
+                    viewModel.retryRestoration { remaining ->
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                if (remaining.isEmpty()) {
+                                    "Restoration checked"
+                                } else {
+                                    "Could not restore: ${remaining.joinToString()}"
+                                },
+                            )
+                        }
+                    }
+                }) { Text("Retry restoration for visible albums") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = settings.hideSourcesSystemwide, onCheckedChange = {
+                    if (it) pendingHideSources = true else viewModel.setHideSources(false)
+                })
+                Text("Move verified originals for hidden albums", modifier = Modifier.padding(start = 8.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = settings.encryptHidden, onCheckedChange = { enabled ->
+                    if (SystemAuthentication.available(context) &&
+                        (viewModel.systemConfigured() || !viewModel.pinConfigured())
+                    ) {
+                        authenticateSystem("Hidden images") { authenticated ->
+                            if (authenticated && viewModel.unlockWithSystem()) {
+                                viewModel.setEncryptHidden(enabled) { success ->
+                                    if (!success) {
+                                        scope.launch { snackbarHostState.showSnackbar("Encryption change failed") }
+                                    }
+                                }
+                            } else if (authenticated) {
+                                pendingEncryption = enabled
+                            }
+                        }
+                    } else {
+                        pendingEncryption = enabled
+                    }
+                })
+                Text("Encrypt hidden images", modifier = Modifier.padding(start = 8.dp))
+            }
+            if (BuildConfig.DEBUG) {
+                SectionTitle("Developer diagnostics")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = settings.debugDiagnostics, onCheckedChange = viewModel::setDebugDiagnostics)
+                    Text("Record local debug events", modifier = Modifier.padding(start = 8.dp))
+                }
+                TextButton(onClick = { diagnosticsExportLauncher.launch("backgrounded-debug.log") }) {
+                    Text("Export diagnostics")
                 }
             }
 
@@ -253,6 +443,172 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+    }
+    if (pendingEncryption != null || pendingPinSetup || pendingSystemSetup) {
+        val enabled = pendingEncryption == true
+        AlertDialog(
+            onDismissRequest = {
+                pendingEncryption = null
+                pendingPinSetup = false
+                pendingSystemSetup = false
+            },
+            title = {
+                Text(
+                    if (pendingPinSetup) {
+                        "Set hidden-album PIN"
+                    } else if (pendingSystemSetup) {
+                        "Unlock hidden images"
+                    } else if (enabled) {
+                        "Encrypt hidden images"
+                    } else {
+                        "Decrypt hidden images"
+                    },
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (pendingPinSetup) {
+                            "Set a PIN of at least six digits."
+                        } else if (pendingSystemSetup) {
+                            "Enter the existing PIN once to enable system authentication."
+                        } else {
+                            "Enter your hidden-album PIN to change encryption."
+                        },
+                    )
+                    OutlinedTextField(
+                        value = pinValue,
+                        onValueChange = {
+                            pinValue = it.filter(Char::isDigit).take(32)
+                            pinError = false
+                        },
+                        label = { Text("PIN (at least 6 digits)") },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions =
+                            androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword,
+                            ),
+                    )
+                    if (!viewModel.pinConfigured()) {
+                        OutlinedTextField(
+                            value = pinConfirm,
+                            onValueChange = { pinConfirm = it.filter(Char::isDigit).take(32) },
+                            label = { Text("Confirm PIN") },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = pinRecovery, onCheckedChange = { pinRecovery = it })
+                            Text("Allow device-credential recovery")
+                        }
+                    }
+                    if (pinError) Text("PIN incorrect or encryption failed", color = MaterialTheme.colorScheme.error)
+                    if (viewModel.pinConfigured() && viewModel.pinRecoveryEnabled()) {
+                        TextButton(onClick = {
+                            DeviceCredentialGate.confirmIntent(context, "Recover hidden albums")
+                                ?.let(pinCredentialLauncher::launch)
+                        }) { Text("Use device credential") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val authenticated =
+                        if (viewModel.pinConfigured()) {
+                            viewModel.unlockPin(pinValue)
+                        } else if (pinValue == pinConfirm) {
+                            if (pinRecovery) {
+                                val intent = DeviceCredentialGate.confirmIntent(context, "Enable PIN recovery")
+                                if (intent != null) pinCredentialLauncher.launch(intent) else pinError = true
+                                false
+                            } else {
+                                viewModel.setupPin(pinValue, false)
+                            }
+                        } else {
+                            false
+                        }
+                    if (authenticated) {
+                        if (pendingPinSetup) {
+                            pendingPinSetup = false
+                            pinValue = ""
+                            pinConfirm = ""
+                        } else if (pendingSystemSetup) {
+                            pendingSystemSetup = false
+                            pinValue = ""
+                            authenticateSystem("Enable system authentication") { success ->
+                                if (success && !viewModel.unlockWithSystem()) {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            "Could not enable system authentication",
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            viewModel.setEncryptHidden(enabled) { success ->
+                                if (success) {
+                                    pendingEncryption = null
+                                    pinValue = ""
+                                    pinConfirm = ""
+                                } else {
+                                    pinError = true
+                                }
+                            }
+                        }
+                    } else if (!pinRecovery || viewModel.pinConfigured()) {
+                        pinError = true
+                    }
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingEncryption = null
+                    pendingPinSetup = false
+                    pendingSystemSetup = false
+                }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+    if (pendingPinRemoval) {
+        AlertDialog(
+            onDismissRequest = { pendingPinRemoval = false },
+            title = { Text("Remove optional PIN") },
+            text = { Text("Hidden images will open with fingerprint or device credential.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingPinRemoval = false
+                    authenticateSystem("Remove optional PIN") { authenticated ->
+                        if (authenticated && (!viewModel.unlockWithSystem() || !viewModel.removePin())) {
+                            scope.launch { snackbarHostState.showSnackbar("Could not remove PIN") }
+                        }
+                    }
+                }) { Text("Remove PIN") }
+            },
+            dismissButton = { TextButton(onClick = { pendingPinRemoval = false }) { Text("Cancel") } },
+        )
+    }
+    if (pendingHideSources) {
+        AlertDialog(
+            onDismissRequest = { pendingHideSources = false },
+            title = { Text("Move source photos") },
+            text = {
+                Text(
+                    "New photos in hidden linked folders are copied, verified, then removed from the " +
+                        "selected folder. When hiding an existing album, choose its source folder or full access. " +
+                        "For an already hidden album, reveal it and choose Move original photos. " +
+                        "Only exact matches in selected folders or local shared storage are moved. " +
+                        "Other apps and cloud services may retain copies.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setHideSources(true)
+                    pendingHideSources = false
+                }) { Text("Enable") }
+            },
+            dismissButton = { TextButton(onClick = { pendingHideSources = false }) { Text("Cancel") } },
+        )
     }
 }
 

@@ -13,6 +13,7 @@ import dev.backgrounded.domain.model.FitMode
 import dev.backgrounded.domain.model.Framing
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.ceil
 import kotlin.math.max
 
 @Singleton
@@ -31,9 +32,18 @@ class BackgroundRenderer
             val gyroShiftX: Float = 0f,
             val gyroShiftY: Float = 0f,
             val gyroMargin: Float = 0f,
+            val slide: SlideMotion.Position? = null,
         )
 
         private val blurCache = LruCache<String, Bitmap>(BLUR_CACHE_ENTRIES)
+
+        /** Prepare expensive blur work before a layer reaches the wallpaper drawing thread. */
+        fun prepareBackdrop(
+            source: Bitmap,
+            framing: Framing,
+        ) {
+            if (framing.backdrop == BackdropType.BLUR) blurredBackdrop(source, framing.blurIntensity)
+        }
 
         fun rotated(
             source: Bitmap,
@@ -41,8 +51,24 @@ class BackgroundRenderer
         ): Bitmap {
             val normalized = ((degrees % 360) + 360) % 360
             if (normalized == 0) return source
-            val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
-            return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+            val matrix =
+                Matrix().apply {
+                    setRotate(normalized.toFloat(), source.width / 2f, source.height / 2f)
+                }
+            val bounds = RectF(0f, 0f, source.width.toFloat(), source.height.toFloat())
+            matrix.mapRect(bounds)
+            val output =
+                Bitmap.createBitmap(
+                    ceil(bounds.width()).toInt().coerceAtLeast(1),
+                    ceil(bounds.height()).toInt().coerceAtLeast(1),
+                    Bitmap.Config.ARGB_8888,
+                )
+            output.eraseColor(Color.TRANSPARENT)
+            Canvas(output).apply {
+                translate(-bounds.left, -bounds.top)
+                drawBitmap(source, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+            }
+            return output
         }
 
         /** Renders the visible window at the frame's scroll offset into a new screen-sized bitmap. */
@@ -95,26 +121,8 @@ class BackgroundRenderer
             canvas.save()
             canvas.translate(-translation.toFloat() + frame.gyroShiftX, frame.gyroShiftY)
             val margin = frame.gyroMargin
-            when (framing.fitMode) {
-                FitMode.BACKGROUND_FILL ->
-                    drawBackdrop(canvas, rotatedSource, framing, virtualWidth, viewport.height, frame.alpha, margin)
-
-                FitMode.FIT -> {
-                    val fill =
-                        Paint().apply {
-                            color = framing.backdropColor
-                            alpha = frame.alpha
-                        }
-                    canvas.drawRect(
-                        -margin,
-                        -margin,
-                        virtualWidth.toFloat() + margin,
-                        viewport.height.toFloat() + margin,
-                        fill,
-                    )
-                }
-
-                else -> Unit
+            if (framing.backdrop != BackdropType.NONE) {
+                drawBackdrop(canvas, rotatedSource, framing, virtualWidth, viewport.height, frame.alpha, margin)
             }
             val placement =
                 FitGeometry.placement(
@@ -149,7 +157,47 @@ class BackgroundRenderer
                 ).apply {
                     if (margin > 0f) inset(-margin, -margin)
                 }
+            if (frame.allowScroll) {
+                destination.offset(
+                    translation +
+                        ScrollGeometry.edgeShiftPixels(
+                            destination.left,
+                            destination.right,
+                            viewport.width,
+                            frame.scroll,
+                            translation,
+                        ),
+                    0f,
+                )
+            }
+            frame.slide?.let { slide ->
+                val coverageScale =
+                    if (framing.fitMode == FitMode.FIT) {
+                        1f
+                    } else {
+                        max(
+                            1f + slide.travelX / destination.width(),
+                            1f + slide.travelY / destination.height(),
+                        )
+                    }
+                val scale = coverageScale * slide.zoom
+                destination.inset(
+                    -(scale - 1f) * destination.width() / 2f,
+                    -(scale - 1f) * destination.height() / 2f,
+                )
+                destination.offset(slide.offsetX, slide.offsetY)
+            }
+            if (framing.mirrorX || framing.mirrorY) {
+                canvas.save()
+                canvas.scale(
+                    if (framing.mirrorX) -1f else 1f,
+                    if (framing.mirrorY) -1f else 1f,
+                    destination.centerX(),
+                    destination.centerY(),
+                )
+            }
             canvas.drawBitmap(rotatedSource, sourceRect, destination, paint)
+            if (framing.mirrorX || framing.mirrorY) canvas.restore()
             canvas.restore()
             if (frame.dim) {
                 val overlay =
@@ -172,6 +220,7 @@ class BackgroundRenderer
         ) {
             val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { this.alpha = alpha }
             when (framing.backdrop) {
+                BackdropType.NONE -> Unit
                 BackdropType.COLOR -> {
                     val fill =
                         Paint().apply {

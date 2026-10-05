@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -17,30 +18,35 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +62,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,6 +78,7 @@ import dev.backgrounded.domain.model.WallpaperSurface
 import dev.backgrounded.domain.render.GestureTransform
 import dev.backgrounded.ui.components.SectionTitle
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,6 +87,8 @@ fun EditorScreen(onBack: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pair = state.pair ?: return
     val expandedKey = state.expandedKey
+    val keys = orderedKeys(state)
+    val pagerState = rememberPagerState(pageCount = { keys.size })
 
     if (expandedKey == null) {
         Scaffold(
@@ -96,8 +106,6 @@ fun EditorScreen(onBack: () -> Unit) {
                 )
             },
         ) { padding ->
-            val keys = orderedKeys(state)
-            val pagerState = rememberPagerState(pageCount = { keys.size })
             HorizontalPager(
                 state = pagerState,
                 modifier =
@@ -227,11 +235,12 @@ private fun FramingEditor(
     val framing = asset.framingFor(key.display, key.surface)
     val aspect = aspectOf(state, key.display)
     var adjustBackdrop by remember { mutableStateOf(false) }
-    var showControls by remember { mutableStateOf(true) }
+    var showControls by remember(key) { mutableStateOf(false) }
+    var controlSection by remember(key) { mutableStateOf(ControlSection.PLACEMENT) }
+    var dockOffset by remember(key) { mutableStateOf(0f) }
     var angleSnap by remember { mutableStateOf(true) }
     var showGrid by remember { mutableStateOf(false) }
     val angleSnapState = rememberUpdatedState(angleSnap)
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Box(modifier = modifier) {
         BoxWithConstraints(
@@ -287,7 +296,7 @@ private fun FramingEditor(
                                             val isDoubleTap =
                                                 endedAt - lastTapAt <= DOUBLE_TAP_WINDOW_MILLIS
                                             lastTapAt = if (isDoubleTap) 0L else endedAt
-                                            if (isDoubleTap) viewModel.alignAndFill()
+                                            if (isDoubleTap) viewModel.align()
                                         }
                                         break
                                     } else if (pressed.size >= 2) {
@@ -391,63 +400,105 @@ private fun FramingEditor(
                 Text(stringResource(R.string.adjust))
             }
         }
-    }
 
-    if (showControls) {
-        ModalBottomSheet(
-            onDismissRequest = { showControls = false },
-            sheetState = sheetState,
-        ) {
-            Column(
+        if (showControls) {
+            Surface(
                 modifier =
-                    Modifier
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp)
-                        .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.align(Alignment.BottomCenter)
+                        .padding(8.dp)
+                        .offset { IntOffset(0, dockOffset.roundToInt()) }
+                        .widthIn(max = 380.dp)
+                        .fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f),
+                tonalElevation = 2.dp,
             ) {
-                Button(
-                    onClick = viewModel::syncToCounterpart,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.sync))
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "━━",
+                            modifier =
+                                Modifier.weight(1f).pointerInput(key) {
+                                    detectDragGestures { change, drag ->
+                                        dockOffset = (dockOffset + drag.y).coerceIn(-800.dp.toPx(), 0f)
+                                        change.consume()
+                                    }
+                                },
+                        )
+                        OutlinedButton(onClick = viewModel::syncToCounterpart) {
+                            Text(stringResource(R.string.sync))
+                        }
+                        TextButton(onClick = viewModel::reset) { Text(stringResource(R.string.reset)) }
+                        IconButton(onClick = { showControls = false }) {
+                            Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close))
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = angleSnap, onCheckedChange = { angleSnap = it })
+                        Text(
+                            stringResource(R.string.angle_snap),
+                            modifier = Modifier.padding(start = 4.dp, end = 12.dp),
+                        )
+                        Switch(checked = showGrid, onCheckedChange = { showGrid = it })
+                        Text(stringResource(R.string.grid), modifier = Modifier.padding(start = 4.dp))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ControlSection.entries.filter {
+                            it != ControlSection.SCROLL || key.surface == WallpaperSurface.HOME
+                        }.forEach { section ->
+                            TextButton(
+                                onClick = { controlSection = section },
+                                colors =
+                                    androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                        containerColor =
+                                            if (controlSection == section) {
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            } else {
+                                                Color.Transparent
+                                            },
+                                    ),
+                            ) { Text(section.label) }
+                        }
+                    }
+                    Column(modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
+                        FramingControls(
+                            section = controlSection,
+                            framing = framing,
+                            sourceWidth = asset.width,
+                            sourceHeight = asset.height,
+                            viewportAspect = aspect,
+                            dimForLock = asset.dimForLock,
+                            surface = key.surface,
+                            scrollPreviews =
+                                ScrollPreviews(
+                                    state.scrollStartPreview,
+                                    state.scrollEndPreview,
+                                    aspectOf(state, key.display),
+                                ),
+                            adjustBackdrop = adjustBackdrop,
+                            onAdjustBackdrop = { adjustBackdrop = it },
+                            viewModel = viewModel,
+                        )
+                    }
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Switch(checked = angleSnap, onCheckedChange = { angleSnap = it })
-                    Text(text = stringResource(R.string.angle_snap))
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Switch(checked = showGrid, onCheckedChange = { showGrid = it })
-                    Text(text = stringResource(R.string.grid))
-                }
-                FramingControls(
-                    framing = framing,
-                    dimForLock = asset.dimForLock,
-                    surface = key.surface,
-                    scrollPreviews =
-                        ScrollPreviews(
-                            start = state.scrollStartPreview,
-                            end = state.scrollEndPreview,
-                            aspect = aspectOf(state, key.display),
-                        ),
-                    adjustBackdrop = adjustBackdrop,
-                    onAdjustBackdrop = { adjustBackdrop = it },
-                    viewModel = viewModel,
-                )
             }
         }
     }
 }
 
+private enum class ControlSection(val label: String) {
+    PLACEMENT("Placement"),
+    SCROLL("Scroll"),
+    EFFECTS("Effects"),
+}
+
 @Composable
 private fun FramingControls(
+    section: ControlSection,
     framing: Framing,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    viewportAspect: Float,
     dimForLock: Boolean,
     surface: WallpaperSurface,
     scrollPreviews: ScrollPreviews,
@@ -455,76 +506,102 @@ private fun FramingControls(
     onAdjustBackdrop: (Boolean) -> Unit,
     viewModel: EditorViewModel,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FitMode.entries.forEach { mode ->
-            FilterChip(
-                selected = framing.fitMode == mode,
-                onClick = { viewModel.setFitMode(mode) },
-                label = { Text(stringResource(fitModeLabel(mode))) },
-            )
+    if (section == ControlSection.PLACEMENT) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(FitMode.FILL, FitMode.FIT, FitMode.STRETCH).forEach { mode ->
+                FilterChip(
+                    selected = framing.fitMode == mode,
+                    onClick = { viewModel.setFitMode(mode) },
+                    label = { Text(stringResource(fitModeLabel(mode))) },
+                )
+            }
         }
-    }
 
-    if (framing.fitMode == FitMode.STRETCH) {
-        Text(
-            text = stringResource(R.string.stretch_x) + ": " + (framing.stretchX * 100).toInt() + "%",
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Slider(
-            value = framing.stretchX,
-            onValueChange = viewModel::setStretchX,
-            valueRange = STRETCH_MIN..STRETCH_MAX,
-        )
-        Text(
-            text = stringResource(R.string.stretch_y) + ": " + (framing.stretchY * 100).toInt() + "%",
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Slider(
-            value = framing.stretchY,
-            onValueChange = viewModel::setStretchY,
-            valueRange = STRETCH_MIN..STRETCH_MAX,
-        )
-    }
-
-    if (framing.fitMode == FitMode.BACKGROUND_FILL) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
-                selected = framing.backdrop == BackdropType.BLUR,
-                onClick = { viewModel.setBackdropType(BackdropType.BLUR) },
-                label = { Text(stringResource(R.string.backdrop_blur)) },
+                selected = framing.mirrorX,
+                onClick = { viewModel.setMirrorX(!framing.mirrorX) },
+                label = { Text("Mirror horizontally") },
             )
             FilterChip(
-                selected = framing.backdrop == BackdropType.COLOR,
-                onClick = { viewModel.setBackdropType(BackdropType.COLOR) },
-                label = { Text(stringResource(R.string.backdrop_color)) },
+                selected = framing.mirrorY,
+                onClick = { viewModel.setMirrorY(!framing.mirrorY) },
+                label = { Text("Mirror vertically") },
             )
         }
-        if (framing.backdrop == BackdropType.BLUR) {
+
+        if (framing.fitMode == FitMode.STRETCH) {
+            val sourceAspect =
+                sourceWidth.toFloat() * framing.crop.width /
+                    (sourceHeight.toFloat() * framing.crop.height).coerceAtLeast(1f)
+            val aspect = if (framing.rotationDegrees % 180 == 0) sourceAspect else 1f / sourceAspect
+            val naturalX = minOf(1f, aspect / viewportAspect)
+            val naturalY = minOf(1f, viewportAspect / aspect)
             Text(
-                text = stringResource(R.string.blur_intensity),
+                text = stringResource(R.string.stretch_x) + ": " + (framing.stretchX * naturalX * 100).toInt() + "%",
                 style = MaterialTheme.typography.labelLarge,
             )
             Slider(
-                value = framing.blurIntensity.toFloat(),
-                onValueChange = { viewModel.setBlurIntensity(it.toInt()) },
-                valueRange = 0f..100f,
+                value = framing.stretchX * naturalX,
+                onValueChange = { viewModel.setStretchX(it / naturalX) },
+                valueRange = (STRETCH_MIN * naturalX)..(STRETCH_MAX * naturalX),
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Switch(checked = adjustBackdrop, onCheckedChange = onAdjustBackdrop)
-                Text(text = stringResource(R.string.adjust_backdrop))
-            }
-        } else {
-            ColorPalette(
-                selected = framing.backdropColor,
-                onSelect = viewModel::setBackdropColor,
+            Text(
+                text = stringResource(R.string.stretch_y) + ": " + (framing.stretchY * naturalY * 100).toInt() + "%",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Slider(
+                value = framing.stretchY * naturalY,
+                onValueChange = { viewModel.setStretchY(it / naturalY) },
+                valueRange = (STRETCH_MIN * naturalY)..(STRETCH_MAX * naturalY),
             )
         }
-    }
 
-    if (surface == WallpaperSurface.HOME) {
+        Text(stringResource(R.string.fit_background), style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(BackdropType.NONE, BackdropType.BLUR, BackdropType.COLOR).forEach { type ->
+                FilterChip(
+                    selected = framing.backdrop == type,
+                    onClick = { viewModel.setBackdropType(type) },
+                    label = {
+                        Text(
+                            when (type) {
+                                BackdropType.NONE -> stringResource(R.string.none)
+                                BackdropType.BLUR -> stringResource(R.string.backdrop_blur)
+                                BackdropType.COLOR -> stringResource(R.string.backdrop_color)
+                            },
+                        )
+                    },
+                )
+            }
+        }
+        if (framing.backdrop != BackdropType.NONE) {
+            if (framing.backdrop == BackdropType.BLUR) {
+                Text(
+                    text = stringResource(R.string.blur_intensity),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Slider(
+                    value = framing.blurIntensity.toFloat(),
+                    onValueChange = { viewModel.setBlurIntensity(it.toInt()) },
+                    valueRange = 0f..100f,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Switch(checked = adjustBackdrop, onCheckedChange = onAdjustBackdrop)
+                    Text(text = stringResource(R.string.adjust_backdrop))
+                }
+            } else {
+                ColorPalette(
+                    selected = framing.backdropColor,
+                    onSelect = viewModel::setBackdropColor,
+                )
+            }
+        }
+    }
+    if (section == ControlSection.SCROLL && surface == WallpaperSurface.HOME) {
         ScrollSettings(
             framing = framing,
             previews = scrollPreviews,
@@ -532,41 +609,39 @@ private fun FramingControls(
         )
     }
 
-    SectionTitle(stringResource(R.string.parallax))
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Switch(
-            checked = framing.gyroParallax,
-            onCheckedChange = viewModel::setGyroParallax,
-        )
-        Text(text = stringResource(R.string.parallax))
-    }
-    if (framing.gyroParallax) {
-        Text(
-            text = stringResource(R.string.parallax_intensity) + ": " + framing.gyroIntensity + "%",
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Slider(
-            value = framing.gyroIntensity.toFloat(),
-            onValueChange = { viewModel.setGyroIntensity(it.toInt()) },
-            valueRange = 0f..100f,
-        )
-    }
-
-    if (surface == WallpaperSurface.LOCK) {
+    if (section == ControlSection.EFFECTS) {
+        SectionTitle(stringResource(R.string.parallax))
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Switch(checked = dimForLock, onCheckedChange = viewModel::setDimForLock)
-            Text(text = stringResource(R.string.dim_lock))
+            Switch(
+                checked = framing.gyroParallax,
+                onCheckedChange = viewModel::setGyroParallax,
+            )
+            Text(text = stringResource(R.string.parallax))
         }
-    }
+        if (framing.gyroParallax) {
+            Text(
+                text = stringResource(R.string.parallax_intensity) + ": " + framing.gyroIntensity + "%",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Slider(
+                value = framing.gyroIntensity.toFloat(),
+                onValueChange = { viewModel.setGyroIntensity(it.toInt()) },
+                valueRange = 0f..100f,
+            )
+        }
 
-    TextButton(onClick = viewModel::reset) {
-        Text(stringResource(R.string.reset))
+        if (surface == WallpaperSurface.LOCK) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Switch(checked = dimForLock, onCheckedChange = viewModel::setDimForLock)
+                Text(text = stringResource(R.string.dim_lock))
+            }
+        }
     }
 }
 

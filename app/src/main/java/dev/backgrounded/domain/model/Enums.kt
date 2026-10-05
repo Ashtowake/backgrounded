@@ -8,23 +8,26 @@ enum class FitMode {
     ;
 
     companion object {
-        fun from(value: String?): FitMode = entries.firstOrNull { it.name == value } ?: FILL
+        fun from(value: String?): FitMode =
+            if (value == BACKGROUND_FILL.name) FIT else entries.firstOrNull { it.name == value } ?: FILL
     }
 }
 
 enum class BackdropType {
+    NONE,
     BLUR,
     COLOR,
     ;
 
     companion object {
-        fun from(value: String?): BackdropType = entries.firstOrNull { it.name == value } ?: BLUR
+        fun from(value: String?): BackdropType = entries.firstOrNull { it.name == value } ?: NONE
     }
 }
 
 enum class SourceType {
     IMPORT,
     SAF_LINK,
+    ENCRYPTED_IMPORT,
     ;
 
     companion object {
@@ -61,6 +64,19 @@ enum class ScheduleType {
 
     companion object {
         fun from(value: String?): ScheduleType = entries.firstOrNull { it.name == value } ?: NONE
+    }
+}
+
+enum class SlideMode {
+    OFF,
+    LEFT_TO_RIGHT,
+    RIGHT_TO_LEFT,
+    DIAGONAL_UP_RIGHT,
+    ZOOM_IN,
+    ;
+
+    companion object {
+        fun from(value: String?): SlideMode = entries.firstOrNull { it.name == value } ?: OFF
     }
 }
 

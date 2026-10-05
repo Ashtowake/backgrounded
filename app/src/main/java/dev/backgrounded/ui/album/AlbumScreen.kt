@@ -1,9 +1,17 @@
 package dev.backgrounded.ui.album
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,14 +20,20 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -32,27 +46,43 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.backgrounded.R
 import dev.backgrounded.data.importer.SafFolders
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.BackgroundPair
+import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.WallpaperSurface
-import dev.backgrounded.ui.components.BackgroundThumbnail
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,30 +94,75 @@ fun AlbumScreen(
     val viewModel: AlbumViewModel = hiltViewModel()
     val album by viewModel.album.collectAsStateWithLifecycle()
     val pairs by viewModel.pairs.collectAsStateWithLifecycle()
+    val hideSourcesEnabled by viewModel.hideSourcesEnabled.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val fileError by viewModel.fileError.collectAsStateWithLifecycle()
+    val pairSources by viewModel.pairSources.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+
+    @Suppress("UNUSED_VARIABLE")
+    val configuration = LocalConfiguration.current
+    val displayTarget = viewModel.currentDisplay()
+    val displayAspect = viewModel.displayAspect(displayTarget)
+    val thumbnailVersion by viewModel.thumbnailVersion.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var menuOpen by remember { mutableStateOf(false) }
     var slotRequest by remember { mutableStateOf<SlotRequest?>(null) }
+    val gridState = rememberLazyGridState()
+    val dragScope = rememberCoroutineScope()
+    var draggingId by remember { mutableStateOf<Long?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var orderedIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    LaunchedEffect(pairs) {
+        if (draggingId == null) orderedIds = pairs.map { it.id }
+    }
+    val displayedPairs =
+        if (orderedIds.isEmpty() && draggingId == null) {
+            pairs
+        } else {
+            orderedIds.mapNotNull { id -> pairs.firstOrNull { it.id == id } }
+        }
+    var showFolderChoices by remember { mutableStateOf(false) }
+    var folderAction by remember { mutableStateOf<FolderAction?>(null) }
+    var pendingSelectedUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var showSourceChoice by remember { mutableStateOf(false) }
+    var showExistingPairs by remember { mutableStateOf(false) }
 
     val imagePicker =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK_COUNT),
-        ) { uris -> viewModel.addImages(uris) }
+        ) { uris ->
+            if (uris.isNotEmpty() && album?.isHidden == true && hideSourcesEnabled) {
+                pendingSelectedUris = uris
+                showSourceChoice = true
+            } else {
+                viewModel.addImages(uris)
+            }
+        }
 
     val folderPicker =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocumentTree(),
         ) { uri ->
             if (uri != null) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
+                when (folderAction) {
+                    FolderAction.IMPORT -> {
+                        runCatching {
+                            context.contentResolver.takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                            )
+                        }
+                        viewModel.addImages(SafFolders.listImages(context, uri))
+                    }
+                    FolderAction.LINK -> viewModel.linkFolder(uri)
+                    FolderAction.MOVE -> viewModel.moveSelectedFromFolder(pendingSelectedUris, uri)
+                    null -> Unit
                 }
-                viewModel.addLinkedImages(SafFolders.listImages(context, uri))
             }
+            folderAction = null
+            pendingSelectedUris = emptyList()
         }
 
     val slotPicker =
@@ -108,6 +183,11 @@ fun AlbumScreen(
         )
         viewModel.clearMessage()
     }
+    LaunchedEffect(fileError) {
+        val error = fileError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(error)
+        viewModel.clearFileError()
+    }
 
     Scaffold(
         topBar = {
@@ -125,31 +205,34 @@ fun AlbumScreen(
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.album_settings))
                     }
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.more))
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.import_folder)) },
-                            onClick = {
-                                menuOpen = false
-                                folderPicker.launch(null)
-                            },
-                        )
-                    }
                 },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    imagePicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                    )
-                },
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.add_images))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloatingActionButton(
+                    onClick = {
+                        viewModel.loadPairSources()
+                        showExistingPairs = true
+                    },
+                    modifier = Modifier.semantics { contentDescription = "Add existing pair" },
+                ) { PairPlusIcon() }
+                FloatingActionButton(
+                    onClick = { showFolderChoices = true },
+                    modifier = Modifier.semantics { contentDescription = "Import or link folder" },
+                ) {
+                    FolderPlusIcon()
+                }
+                FloatingActionButton(
+                    onClick = {
+                        imagePicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    },
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.add_images))
+                }
             }
         },
     ) { padding ->
@@ -167,6 +250,7 @@ fun AlbumScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(GRID_COLUMNS),
+                state = gridState,
                 modifier =
                     Modifier
                         .fillMaxSize()
@@ -175,17 +259,80 @@ fun AlbumScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(pairs, key = { it.id }) { pair ->
+                itemsIndexed(displayedPairs, key = { _, pair -> pair.id }) { index, pair ->
                     PairCell(
                         pair = pair,
+                        number = index + 1,
+                        dragging = draggingId == pair.id,
+                        dragOffset = if (draggingId == pair.id) dragOffset else Offset.Zero,
+                        modifier = Modifier.animateItem(),
+                        onDragStart = {
+                            draggingId = pair.id
+                            dragOffset = Offset.Zero
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        },
+                        onDrag = { delta ->
+                            dragOffset += delta
+                            val current = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == draggingId }
+                            if (current != null) {
+                                val center =
+                                    Offset(
+                                        current.offset.x + current.size.width / 2f + dragOffset.x,
+                                        current.offset.y + current.size.height / 2f + dragOffset.y,
+                                    )
+                                val target =
+                                    gridState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                        val inColumn =
+                                            center.x >= item.offset.x &&
+                                                center.x <= item.offset.x + item.size.width
+                                        val inRow =
+                                            center.y >= item.offset.y &&
+                                                center.y <= item.offset.y + item.size.height
+                                        inColumn && inRow
+                                    }?.key as? Long
+                                if (target != null && target != pair.id) {
+                                    val targetItem =
+                                        gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == target }
+                                    val from = orderedIds.indexOf(pair.id)
+                                    val to = orderedIds.indexOf(target)
+                                    if (from >= 0 && to >= 0 && targetItem != null) {
+                                        dragOffset -=
+                                            Offset(
+                                                (targetItem.offset.x - current.offset.x).toFloat(),
+                                                (targetItem.offset.y - current.offset.y).toFloat(),
+                                            )
+                                        orderedIds = orderedIds.toMutableList().apply { add(to, removeAt(from)) }
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                }
+                                val viewportHeight = gridState.layoutInfo.viewportEndOffset
+                                if (center.y > viewportHeight - DRAG_EDGE_PX) {
+                                    dragScope.launch { gridState.scrollBy(DRAG_SCROLL_PX) }
+                                } else if (center.y < DRAG_EDGE_PX) {
+                                    dragScope.launch { gridState.scrollBy(-DRAG_SCROLL_PX) }
+                                }
+                            }
+                        },
+                        onDragEnd = {
+                            viewModel.reorder(orderedIds)
+                            draggingId = null
+                            dragOffset = Offset.Zero
+                        },
+                        onDragCancel = {
+                            draggingId = null
+                            dragOffset = Offset.Zero
+                            orderedIds = pairs.map { it.id }
+                        },
+                        displayTarget = displayTarget,
+                        displayAspect = displayAspect,
+                        thumbnailVersion = thumbnailVersion,
+                        viewModel = viewModel,
                         isCover = pair.id == album?.coverPairId,
                         onOpen = { onEditPair(pair.id) },
                         onApply = { viewModel.applyNow(pair.id) },
                         onSetCover = { viewModel.setCover(pair.id) },
                         onSetHomeImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.HOME) },
                         onSetLockImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.LOCK) },
-                        onMoveUp = { viewModel.move(pair.id, -1) },
-                        onMoveDown = { viewModel.move(pair.id, 1) },
                         onDelete = { viewModel.deletePair(pair.id) },
                     )
                 }
@@ -201,33 +348,256 @@ fun AlbumScreen(
             )
         }
     }
+    if (showFolderChoices) {
+        AlertDialog(
+            onDismissRequest = { showFolderChoices = false },
+            title = { Text("Add folder") },
+            text = { Text("Import copies photos once. Link checks for new photos at each wallpaper change.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showFolderChoices = false
+                    folderAction = FolderAction.LINK
+                    folderPicker.launch(null)
+                }) { Text("Link folder") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showFolderChoices = false
+                    folderAction = FolderAction.IMPORT
+                    folderPicker.launch(null)
+                }) { Text("Import folder") }
+            },
+        )
+    }
+    if (showExistingPairs) {
+        AlertDialog(
+            onDismissRequest = { showExistingPairs = false },
+            title = { Text("Add existing pair") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (pairSources.isEmpty()) Text("No pairs in other available albums")
+                    pairSources.forEach { source ->
+                        TextButton(onClick = {
+                            showExistingPairs = false
+                            viewModel.addExistingPair(source.pair)
+                        }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.size(width = 38.dp, height = 56.dp)) {
+                                    SlotThumbnail(
+                                        background = source.pair.lock,
+                                        surface = WallpaperSurface.LOCK,
+                                        displayTarget = displayTarget,
+                                        displayAspect = displayAspect,
+                                        thumbnailVersion = thumbnailVersion,
+                                        viewModel = viewModel,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                                Box(
+                                    modifier =
+                                        Modifier
+                                            .padding(start = 2.dp)
+                                            .size(width = 38.dp, height = 56.dp),
+                                ) {
+                                    SlotThumbnail(
+                                        background = source.pair.home,
+                                        surface = WallpaperSurface.HOME,
+                                        displayTarget = displayTarget,
+                                        displayAspect = displayAspect,
+                                        thumbnailVersion = thumbnailVersion,
+                                        viewModel = viewModel,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                                Text(
+                                    "${source.albumName} · ${source.pair.home.displayName}",
+                                    modifier = Modifier.padding(start = 8.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showExistingPairs = false }) { Text("Cancel") } },
+        )
+    }
+    if (showSourceChoice) {
+        AlertDialog(
+            onDismissRequest = {
+                showSourceChoice = false
+                pendingSelectedUris = emptyList()
+            },
+            title = { Text("Hide source photos") },
+            text = {
+                Text(
+                    "Choose a source folder or use full access to move exact local matches. " +
+                        "Other apps or cloud services may retain copies.",
+                )
+            },
+            confirmButton = {
+                Column {
+                    if (Environment.isExternalStorageManager()) {
+                        TextButton(onClick = {
+                            showSourceChoice = false
+                            viewModel.moveSelectedWithFullAccess(pendingSelectedUris)
+                            pendingSelectedUris = emptyList()
+                        }) { Text("Use full access and move") }
+                    }
+                    TextButton(onClick = {
+                        showSourceChoice = false
+                        folderAction = FolderAction.MOVE
+                        folderPicker.launch(null)
+                    }) { Text("Choose source folder and move") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showSourceChoice = false
+                    viewModel.addImages(pendingSelectedUris)
+                    pendingSelectedUris = emptyList()
+                }) { Text("Keep original visible") }
+            },
+        )
+    }
+}
+
+private enum class FolderAction { IMPORT, LINK, MOVE }
+
+@Composable
+private fun PairPlusIcon() {
+    val color = MaterialTheme.colorScheme.onPrimaryContainer
+    Canvas(modifier = Modifier.size(24.dp)) {
+        drawRect(
+            color,
+            topLeft = Offset(size.width * 0.08f, size.height * 0.13f),
+            size = androidx.compose.ui.geometry.Size(size.width * 0.6f, size.height * 0.6f),
+            style = Stroke(width = size.width * 0.07f),
+        )
+        drawRect(
+            color,
+            topLeft = Offset(size.width * 0.24f, size.height * 0.29f),
+            size = androidx.compose.ui.geometry.Size(size.width * 0.6f, size.height * 0.6f),
+            style = Stroke(width = size.width * 0.07f),
+        )
+        drawLine(
+            color,
+            Offset(size.width * 0.68f, size.height * 0.76f),
+            Offset(size.width * 0.94f, size.height * 0.76f),
+            strokeWidth = size.width * 0.08f,
+        )
+        drawLine(
+            color,
+            Offset(size.width * 0.81f, size.height * 0.63f),
+            Offset(size.width * 0.81f, size.height * 0.89f),
+            strokeWidth = size.width * 0.08f,
+        )
+    }
+}
+
+@Composable
+private fun FolderPlusIcon() {
+    val color = MaterialTheme.colorScheme.onPrimaryContainer
+    Canvas(modifier = Modifier.size(24.dp)) {
+        val path =
+            Path().apply {
+                moveTo(size.width * 0.08f, size.height * 0.2f)
+                lineTo(size.width * 0.4f, size.height * 0.2f)
+                lineTo(size.width * 0.5f, size.height * 0.34f)
+                lineTo(size.width * 0.92f, size.height * 0.34f)
+                lineTo(size.width * 0.92f, size.height * 0.82f)
+                lineTo(size.width * 0.08f, size.height * 0.82f)
+                close()
+            }
+        drawPath(path, color, style = Stroke(width = size.width * 0.07f))
+        val plusX = size.width * 0.79f
+        val plusY = size.height * 0.74f
+        drawLine(
+            color,
+            androidx.compose.ui.geometry.Offset(plusX - size.width * 0.12f, plusY),
+            androidx.compose.ui.geometry.Offset(plusX + size.width * 0.12f, plusY),
+            strokeWidth = size.width * 0.07f,
+        )
+        drawLine(
+            color,
+            androidx.compose.ui.geometry.Offset(plusX, plusY - size.height * 0.12f),
+            androidx.compose.ui.geometry.Offset(plusX, plusY + size.height * 0.12f),
+            strokeWidth = size.width * 0.07f,
+        )
+    }
 }
 
 @Composable
 private fun PairCell(
     pair: BackgroundPair,
+    number: Int,
+    dragging: Boolean,
+    dragOffset: Offset,
+    modifier: Modifier,
+    onDragStart: () -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    displayTarget: DisplayTarget,
+    displayAspect: Float,
+    thumbnailVersion: Int,
+    viewModel: AlbumViewModel,
     isCover: Boolean,
     onOpen: () -> Unit,
     onApply: () -> Unit,
     onSetCover: () -> Unit,
     onSetHomeImage: () -> Unit,
     onSetLockImage: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    Card(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
+    val dragScale by animateFloatAsState(
+        targetValue = if (dragging) 1.06f else 1f,
+        animationSpec = spring(),
+        label = "Pair drag scale",
+    )
+    Card(
+        onClick = onOpen,
+        modifier =
+            modifier.fillMaxWidth()
+                .zIndex(if (dragging) 1f else 0f)
+                .graphicsLayer {
+                    translationX = dragOffset.x
+                    translationY = dragOffset.y
+                    scaleX = dragScale
+                    scaleY = dragScale
+                    shadowElevation = if (dragging) 18.dp.toPx() else 0f
+                }
+                .pointerInput(pair.id) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { onDragStart() },
+                        onDragEnd = onDragEnd,
+                        onDragCancel = onDragCancel,
+                        onDrag = { change, delta ->
+                            change.consume()
+                            onDrag(delta)
+                        },
+                    )
+                },
+    ) {
         Column {
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 SlotThumbnail(
-                    background = pair.home,
-                    surface = WallpaperSurface.HOME,
+                    background = pair.lock,
+                    surface = WallpaperSurface.LOCK,
+                    displayTarget = displayTarget,
+                    displayAspect = displayAspect,
+                    thumbnailVersion = thumbnailVersion,
+                    viewModel = viewModel,
                     modifier = Modifier.weight(1f),
                 )
                 SlotThumbnail(
-                    background = pair.lock,
-                    surface = WallpaperSurface.LOCK,
+                    background = pair.home,
+                    surface = WallpaperSurface.HOME,
+                    displayTarget = displayTarget,
+                    displayAspect = displayAspect,
+                    thumbnailVersion = thumbnailVersion,
+                    viewModel = viewModel,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -236,7 +606,7 @@ private fun PairCell(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = pair.home.displayName,
+                    text = "$number. ${pair.home.displayName}",
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.weight(1f),
                 )
@@ -280,20 +650,6 @@ private fun PairCell(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text(stringResource(R.string.move_up)) },
-                        onClick = {
-                            menuOpen = false
-                            onMoveUp()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.move_down)) },
-                        onClick = {
-                            menuOpen = false
-                            onMoveDown()
-                        },
-                    )
-                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.delete)) },
                         onClick = {
                             menuOpen = false
@@ -310,13 +666,35 @@ private fun PairCell(
 private fun SlotThumbnail(
     background: Background,
     surface: WallpaperSurface,
+    displayTarget: DisplayTarget,
+    displayAspect: Float,
+    thumbnailVersion: Int,
+    viewModel: AlbumViewModel,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.aspectRatio(CELL_ASPECT_RATIO)) {
-        BackgroundThumbnail(
-            background = background,
-            modifier = Modifier.fillMaxSize(),
-        )
+    val framing = background.framingFor(displayTarget, surface)
+    val preview =
+        remember(
+            background.id,
+            background.storageRef,
+            framing,
+            background.dimForLock,
+            surface,
+            displayTarget,
+            displayAspect,
+            thumbnailVersion,
+        ) {
+            viewModel.preview(background, surface, displayTarget, displayAspect)
+        }
+    Box(modifier = modifier.aspectRatio(displayAspect)) {
+        if (preview != null) {
+            Image(
+                bitmap = preview.asImageBitmap(),
+                contentDescription = background.displayName,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         Text(
             text =
                 stringResource(
@@ -339,4 +717,5 @@ private data class SlotRequest(
 
 private const val GRID_COLUMNS = 2
 private const val MAX_PICK_COUNT = 50
-private const val CELL_ASPECT_RATIO = 0.62f
+private const val DRAG_EDGE_PX = 120f
+private const val DRAG_SCROLL_PX = 35f

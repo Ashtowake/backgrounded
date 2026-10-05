@@ -83,4 +83,13 @@ class ScrollGeometryTest {
         val scroll = ScrollGeometry.scrollFor(framing, screenWidth = 1000)
         assertEquals(2000, scroll.slackPixels)
     }
+
+    @Test
+    fun `wide image reaches both edges of the scroll band`() {
+        val scroll = ScrollGeometry.Scroll(1000, 0f, 1f)
+        val first = ScrollGeometry.edgeShiftPixels(-500f, 2500f, 2000, scroll, 0)
+        val last = ScrollGeometry.edgeShiftPixels(-500f, 2500f, 2000, scroll, 1000)
+        assertEquals(0f, -500f + first, 0.001f)
+        assertEquals(2000f, 2500f + last, 0.001f)
+    }
 }

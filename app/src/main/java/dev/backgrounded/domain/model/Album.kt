@@ -18,6 +18,12 @@ data class Album(
     val lastChangedAt: Long,
     val shuffleRemaining: List<Long>,
     val sortIndex: Int,
+    val rotationEnabled: Boolean = true,
+    val intervalSeconds: Int? = null,
+    val slideMode: SlideMode = SlideMode.OFF,
+    val slideSpeedPxPerSecond: Float = 10f,
+    val crossfadeEnabled: Boolean = true,
+    val crossfadeDurationMs: Int = 800,
 )
 
 data class UnlockPolicy(

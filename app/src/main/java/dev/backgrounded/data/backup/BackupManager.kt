@@ -46,6 +46,12 @@ data class AlbumBackup(
     val rotationOrder: String = RotationOrder.SEQUENTIAL.name,
     val scheduleType: String = ScheduleType.NONE.name,
     val intervalMinutes: Int? = null,
+    val intervalSeconds: Int? = null,
+    val slideMode: String = "OFF",
+    val slideSpeedPxPerSecond: Float = 10f,
+    val crossfadeEnabled: Boolean? = null,
+    val crossfadeDurationMs: Int = 800,
+    val rotationEnabled: Boolean = true,
     val fixedTimes: List<String> = emptyList(),
     val unlockEnabled: Boolean = false,
     val unlockMinMinutes: Int = 5,
@@ -126,16 +132,20 @@ data class FramingBackup(
     val scrollSpanFraction: Float = 1f,
     val gyroParallax: Boolean = false,
     val gyroIntensity: Int = Framing.DEFAULT_GYRO_INTENSITY,
+    val mirrorX: Boolean = false,
+    val mirrorY: Boolean = false,
 )
 
 @Serializable
 data class SettingsBackup(
     val activeAlbumIndex: Int? = null,
     val rotationPaused: Boolean = false,
+    val authenticateHiddenSwitch: Boolean = true,
     val doubleTapEnabled: Boolean = true,
     val doubleTapMode: String = DoubleTapMode.BACKGROUND.name,
     val doubleTapAction: String = GestureAction.NEXT.name,
-    val crossfadeEnabled: Boolean = true,
+    // Legacy global value, used only when importing older backups.
+    val crossfadeEnabled: Boolean? = null,
     val externalControlEnabled: Boolean = false,
     val widgetIconSource: String = "builtin:next",
     val widgetIconAlpha: Int = 255,
@@ -145,7 +155,7 @@ data class SettingsBackup(
     val widgetPinnedAlbumIndex: Int? = null,
 )
 
-private const val CURRENT_SCHEMA = 5
+private const val CURRENT_SCHEMA = 7
 
 @Singleton
 class BackupManager
@@ -175,10 +185,10 @@ class BackupManager
                                     albums.indexOfFirst { it.id == settings.activeAlbumId }
                                         .takeIf { it >= 0 },
                                 rotationPaused = settings.rotationPaused,
+                                authenticateHiddenSwitch = settings.authenticateHiddenSwitch,
                                 doubleTapEnabled = settings.doubleTapEnabled,
                                 doubleTapMode = settings.doubleTapMode.name,
                                 doubleTapAction = settings.doubleTapAction.name,
-                                crossfadeEnabled = settings.crossfadeEnabled,
                                 externalControlEnabled = settings.externalControlEnabled,
                                 widgetIconSource = settings.widgetIconSource,
                                 widgetIconAlpha = settings.widgetIconAlpha,
@@ -194,6 +204,7 @@ class BackupManager
             return json.encodeToString(backup)
         }
 
+        @Suppress("LongMethod")
         suspend fun importJson(text: String): Boolean =
             runCatching {
                 val backup = json.decodeFromString<BackupFile>(text)
@@ -215,6 +226,14 @@ class BackupManager
                                 rotationOrder = albumBackup.rotationOrder,
                                 scheduleType = albumBackup.scheduleType,
                                 intervalMinutes = albumBackup.intervalMinutes,
+                                intervalSeconds = albumBackup.intervalSeconds ?: albumBackup.intervalMinutes?.times(60),
+                                slideMode = albumBackup.slideMode,
+                                slideSpeedPxPerSecond = albumBackup.slideSpeedPxPerSecond,
+                                crossfadeEnabled =
+                                    albumBackup.crossfadeEnabled
+                                        ?: backup.settings?.crossfadeEnabled ?: true,
+                                crossfadeDurationMs = albumBackup.crossfadeDurationMs.coerceIn(100, 3000),
+                                rotationEnabled = albumBackup.rotationEnabled,
                                 fixedTimesCsv = albumBackup.fixedTimes.joinToString(separator = ","),
                                 unlockEnabled = albumBackup.unlockEnabled,
                                 unlockMinMinutes = albumBackup.unlockMinMinutes,
@@ -272,12 +291,12 @@ class BackupManager
                 }
                 backup.settings?.let { settings ->
                     settingsStore.setRotationPaused(settings.rotationPaused)
+                    settingsStore.setAuthenticateHiddenSwitch(settings.authenticateHiddenSwitch)
                     settingsStore.setDoubleTap(
                         settings.doubleTapEnabled,
                         DoubleTapMode.from(settings.doubleTapMode),
                         GestureAction.from(settings.doubleTapAction),
                     )
-                    settingsStore.setCrossfade(settings.crossfadeEnabled)
                     settingsStore.setExternalControl(settings.externalControlEnabled)
                     settingsStore.setWidgetConfig(
                         iconSource = settings.widgetIconSource,
@@ -311,6 +330,12 @@ class BackupManager
                 rotationOrder = rotationOrder,
                 scheduleType = scheduleType,
                 intervalMinutes = intervalMinutes,
+                intervalSeconds = intervalSeconds,
+                slideMode = slideMode,
+                slideSpeedPxPerSecond = slideSpeedPxPerSecond,
+                crossfadeEnabled = crossfadeEnabled,
+                crossfadeDurationMs = crossfadeDurationMs,
+                rotationEnabled = rotationEnabled,
                 fixedTimes =
                     fixedTimesCsv.orEmpty()
                         .split(',')
@@ -376,6 +401,8 @@ class BackupManager
                             scrollSpanFraction = framing.scrollSpanFraction,
                             gyroParallax = framing.gyroParallax,
                             gyroIntensity = framing.gyroIntensity,
+                            mirrorX = framing.mirrorX,
+                            mirrorY = framing.mirrorY,
                         )
                     },
             )
@@ -471,6 +498,8 @@ class BackupManager
                 scrollSpanFraction = scrollSpanFraction,
                 gyroParallax = gyroParallax,
                 gyroIntensity = gyroIntensity,
+                mirrorX = mirrorX,
+                mirrorY = mirrorY,
             )
 
         private fun appVersion(): String =

@@ -1,22 +1,31 @@
 package dev.backgrounded.ui.albums
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.backgrounded.core.security.EncryptedImageStore
+import dev.backgrounded.core.security.PinVault
 import dev.backgrounded.data.datastore.Settings
 import dev.backgrounded.data.datastore.SettingsStore
+import dev.backgrounded.data.importer.ManagedSourceMover
 import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.domain.model.Album
+import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.NextAlbum
+import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -27,9 +36,13 @@ data class AlbumsUiState(
     val activeAlbumId: Long? = null,
     val paused: Boolean = false,
     val hiddenRevealed: Boolean = false,
+    val encryptHidden: Boolean = false,
+    val hideSourcesSystemwide: Boolean = false,
+    val authenticateHiddenSwitch: Boolean = true,
 )
 
 @HiltViewModel
+@Suppress("LongParameterList")
 class AlbumsViewModel
     @Inject
     constructor(
@@ -39,8 +52,12 @@ class AlbumsViewModel
         private val applyPreviousBackground: ApplyPreviousBackground,
         private val nextAlbum: NextAlbum,
         private val togglePauseUseCase: TogglePause,
+        private val pinVault: PinVault,
+        private val encryptedImageStore: EncryptedImageStore,
+        private val sourceMover: ManagedSourceMover,
     ) : ViewModel() {
         private val hiddenRevealed = MutableStateFlow(false)
+        val operationError = MutableStateFlow<String?>(null)
 
         private val stateFlow: Flow<AlbumsUiState> =
             combine(
@@ -56,6 +73,9 @@ class AlbumsViewModel
                             ?: albums.firstOrNull { !it.isHidden }?.id,
                     paused = settings.rotationPaused,
                     hiddenRevealed = revealed,
+                    encryptHidden = settings.encryptHidden,
+                    hideSourcesSystemwide = settings.hideSourcesSystemwide,
+                    authenticateHiddenSwitch = settings.authenticateHiddenSwitch,
                 )
             }
 
@@ -66,6 +86,21 @@ class AlbumsViewModel
                 AlbumsUiState(),
             )
 
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        val albumPreviews: StateFlow<Map<Long, List<Background>>> =
+            albumRepository.observeAlbums()
+                .flatMapLatest { albums ->
+                    if (albums.isEmpty()) {
+                        flowOf(emptyMap())
+                    } else {
+                        combine(albums.map { albumRepository.observePairs(it.id) }) { lists ->
+                            albums.mapIndexed { index, album ->
+                                album.id to lists[index].take(PREVIEW_COUNT).map { it.home }
+                            }.toMap()
+                        }
+                    }
+                }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyMap())
+
         fun createAlbum(name: String) {
             viewModelScope.launch {
                 val id = albumRepository.createAlbum(name.trim().ifEmpty { "Album" })
@@ -73,28 +108,135 @@ class AlbumsViewModel
             }
         }
 
-        fun setActive(albumId: Long) {
-            viewModelScope.launch { settingsStore.setActiveAlbum(albumId) }
+        fun setActive(
+            albumId: Long,
+            authenticated: Boolean = false,
+        ) {
+            viewModelScope.launch {
+                val album = albumRepository.getAlbum(albumId) ?: return@launch
+                if (album.isHidden && settingsStore.settings.first().authenticateHiddenSwitch && !authenticated) {
+                    return@launch
+                }
+                settingsStore.setActiveAlbum(albumId)
+            }
         }
 
+        @Suppress("CyclomaticComplexMethod")
         fun setHidden(
             albumId: Long,
             hidden: Boolean,
+            sourceFolder: Uri? = null,
+            useFullAccess: Boolean = false,
         ) {
             viewModelScope.launch {
-                albumRepository.setHidden(albumId, hidden)
-                if (hidden) {
-                    settingsStore.setActiveAlbum(null)
-                    hiddenRevealed.value = false
+                val settings = settingsStore.settings.first()
+                if (hidden && settings.encryptHidden && !pinVault.unlocked()) return@launch
+                if (hidden && settings.hideSourcesSystemwide) {
+                    if (sourceFolder == null && !useFullAccess) {
+                        operationError.value = "Select a source folder or grant all-files access"
+                        return@launch
+                    }
+                    val moved =
+                        if (useFullAccess) {
+                            sourceMover.moveAlbumSourcesFullAccess(albumId)
+                        } else {
+                            sourceMover.moveAlbumSources(albumId, requireNotNull(sourceFolder))
+                        }
+                    if (!moved.complete) {
+                        val unrestored = sourceMover.restoreAlbum(albumId)
+                        operationError.value = sourceMoveError(moved, unrestored)
+                        return@launch
+                    }
                 }
+                if (hidden && settings.encryptHidden) {
+                    val assets =
+                        albumRepository.pairsFor(
+                            albumId,
+                        ).flatMap { listOf(it.home, it.lock) }.distinctBy { it.id }
+                    if (!assets.all { encryptedImageStore.encryptAsset(it.id) }) {
+                        assets.forEach { encryptedImageStore.decryptAsset(it.id) }
+                        val unrestored = sourceMover.restoreAlbum(albumId)
+                        operationError.value =
+                            "Could not encrypt every image" +
+                            if (unrestored.isEmpty()) "" else "; originals not restored: ${unrestored.joinToString()}"
+                        return@launch
+                    }
+                }
+                if (!hidden) {
+                    val assets =
+                        albumRepository.pairsFor(
+                            albumId,
+                        ).flatMap { listOf(it.home, it.lock) }.distinctBy { it.id }
+                    if (!assets.all { encryptedImageStore.decryptAsset(it.id) }) {
+                        assets.forEach { encryptedImageStore.encryptAsset(it.id) }
+                        operationError.value = "Unlock the PIN to restore encrypted images"
+                        return@launch
+                    }
+                    val unresolved = sourceMover.restoreAlbum(albumId)
+                    if (unresolved.isNotEmpty()) {
+                        operationError.value =
+                            "Originals not restored: ${unresolved.joinToString()}. Safe app copies remain."
+                    }
+                }
+                albumRepository.setHidden(albumId, hidden)
+                if (hidden) hiddenRevealed.value = false
             }
         }
+
+        fun moveSources(
+            albumId: Long,
+            sourceFolder: Uri? = null,
+            useFullAccess: Boolean = false,
+        ) {
+            viewModelScope.launch {
+                if (albumRepository.getAlbum(albumId)?.isHidden != true) return@launch
+                if (settingsStore.settings.first().encryptHidden && !pinVault.unlocked()) {
+                    operationError.value = "Unlock hidden images before moving originals"
+                    return@launch
+                }
+                val moved =
+                    if (useFullAccess) {
+                        sourceMover.moveAlbumSourcesFullAccess(albumId)
+                    } else if (sourceFolder != null) {
+                        sourceMover.moveAlbumSources(albumId, sourceFolder)
+                    } else {
+                        return@launch
+                    }
+                if (!moved.complete) operationError.value = sourceMoveError(moved)
+            }
+        }
+
+        private fun sourceMoveError(
+            result: ManagedSourceMover.MoveResult,
+            unrestored: List<String> = emptyList(),
+        ): String =
+            buildString {
+                if (result.unmatched.isNotEmpty()) {
+                    append("No unique original found for: ")
+                    append(result.unmatched.take(3).joinToString())
+                    if (result.unmatched.size > 3) append(" (+${result.unmatched.size - 3} more)")
+                    append(". Check source access or duplicate copies and retry.")
+                }
+                if (result.failed.isNotEmpty()) {
+                    if (isNotEmpty()) append(" ")
+                    append("Could not move: ${result.failed.take(3).joinToString()}.")
+                }
+                if (unrestored.isNotEmpty()) append(" Originals not restored: ${unrestored.take(3).joinToString()}.")
+            }
 
         fun next() = viewModelScope.launch { applyNextBackground(Trigger.MANUAL) }
 
         fun previous() = viewModelScope.launch { applyPreviousBackground(Trigger.MANUAL) }
 
-        fun advanceAlbum() = viewModelScope.launch { nextAlbum(Trigger.MANUAL) }
+        fun advanceAlbum(
+            trigger: Trigger = Trigger.MANUAL,
+            onAuthenticationRequired: () -> Unit,
+        ) = viewModelScope.launch {
+            if (nextAlbum(trigger) == NextAlbumResult.AUTH_REQUIRED) onAuthenticationRequired()
+        }
+
+        fun advanceAlbumAuthorized(trigger: Trigger) =
+            viewModelScope.launch { nextAlbum(trigger, authenticated = true) }
 
         fun togglePause() = viewModelScope.launch { togglePauseUseCase() }
 
@@ -106,7 +248,31 @@ class AlbumsViewModel
             hiddenRevealed.value = false
         }
 
+        fun clearError() {
+            operationError.value = null
+        }
+
+        fun pinConfigured(): Boolean = pinVault.configured()
+
+        fun systemConfigured(): Boolean = pinVault.biometricConfigured()
+
+        fun prepareSystemKey(): Boolean = pinVault.prepareSystemKey()
+
+        fun unlockWithSystem(): Boolean = pinVault.unlockWithSystem()
+
+        fun pinRecoveryEnabled(): Boolean = pinVault.recoveryEnabled()
+
+        fun setupPin(
+            pin: String,
+            recovery: Boolean,
+        ): Boolean = pinVault.setup(pin, recovery)
+
+        fun unlockPin(pin: String): Boolean = pinVault.unlock(pin)
+
+        fun recoverPin(): Boolean = pinVault.recover()
+
         private companion object {
             const val STOP_TIMEOUT_MILLIS = 5_000L
+            const val PREVIEW_COUNT = 4
         }
     }

@@ -12,8 +12,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BackgroundPairEntity::class,
         BackgroundFramingEntity::class,
         HistoryEntity::class,
+        LinkedFolderEntity::class,
+        ManagedSourceEntity::class,
+        EncryptedAssetEntity::class,
     ],
-    version = 7,
+    version = 12,
     exportSchema = true,
 )
 abstract class BackgroundedDatabase : RoomDatabase() {
@@ -26,6 +29,12 @@ abstract class BackgroundedDatabase : RoomDatabase() {
     abstract fun framingDao(): FramingDao
 
     abstract fun historyDao(): HistoryDao
+
+    abstract fun linkedFolderDao(): LinkedFolderDao
+
+    abstract fun managedSourceDao(): ManagedSourceDao
+
+    abstract fun encryptedAssetDao(): EncryptedAssetDao
 
     companion object {
         val MIGRATION_1_2 =
@@ -243,6 +252,95 @@ abstract class BackgroundedDatabase : RoomDatabase() {
                         "ALTER TABLE `background_framings` ADD COLUMN `gyroIntensity` " +
                             "INTEGER NOT NULL DEFAULT 50",
                     )
+                }
+            }
+
+        val MIGRATION_7_8 =
+            object : Migration(7, 8) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `linked_folders` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `albumId` INTEGER NOT NULL, " +
+                            "`treeUri` TEXT NOT NULL, `lastScanAt` INTEGER NOT NULL, " +
+                            "FOREIGN KEY(`albumId`) REFERENCES `albums`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_linked_folders_albumId` ON `linked_folders` (`albumId`)",
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_linked_folders_albumId_treeUri` " +
+                            "ON `linked_folders` (`albumId`, `treeUri`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `managed_sources` (" +
+                            "`assetId` INTEGER NOT NULL PRIMARY KEY, `treeUri` TEXT NOT NULL, " +
+                            "`documentId` TEXT NOT NULL, `originalName` TEXT NOT NULL, " +
+                            "`sha256` TEXT NOT NULL, `moveState` TEXT NOT NULL, " +
+                            "FOREIGN KEY(`assetId`) REFERENCES `backgrounds`(`id`) " +
+                            "ON UPDATE NO ACTION ON DELETE CASCADE)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_managed_sources_treeUri` ON `managed_sources` (`treeUri`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `encrypted_assets` (" +
+                            "`assetId` INTEGER NOT NULL PRIMARY KEY, `formatVersion` INTEGER NOT NULL, " +
+                            "`wrappedKey` BLOB NOT NULL, `keyNonce` BLOB NOT NULL, " +
+                            "FOREIGN KEY(`assetId`) REFERENCES `backgrounds`(`id`) " +
+                            "ON UPDATE NO ACTION ON DELETE CASCADE)",
+                    )
+                }
+            }
+
+        val MIGRATION_8_9 =
+            object : Migration(8, 9) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("UPDATE `background_framings` SET `backdrop` = 'COLOR' WHERE `fitMode` = 'FIT'")
+                    db.execSQL(
+                        "UPDATE `background_framings` SET `backdrop` = 'NONE' " +
+                            "WHERE `fitMode` IN ('FILL', 'STRETCH')",
+                    )
+                    db.execSQL(
+                        "UPDATE `background_framings` SET `fitMode` = 'FIT' " +
+                            "WHERE `fitMode` = 'BACKGROUND_FILL'",
+                    )
+                }
+            }
+
+        val MIGRATION_9_10 =
+            object : Migration(9, 10) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE `background_framings` ADD COLUMN `mirrorX` INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE `background_framings` ADD COLUMN `mirrorY` INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `rotationEnabled` INTEGER NOT NULL DEFAULT 1")
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `intervalSeconds` INTEGER")
+                    db.execSQL("UPDATE `albums` SET `intervalSeconds` = `intervalMinutes` * 60")
+                    db.execSQL(
+                        "ALTER TABLE `albums` ADD COLUMN `intervalTransition` " +
+                            "TEXT NOT NULL DEFAULT 'CROSSFADE'",
+                    )
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `intervalTransitionMs` INTEGER NOT NULL DEFAULT 800")
+                }
+            }
+
+        fun crossfadeMigration(legacySettings: () -> Pair<Boolean, Int>): Migration =
+            object : Migration(11, 12) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `crossfadeEnabled` INTEGER NOT NULL DEFAULT 1")
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `crossfadeDurationMs` INTEGER NOT NULL DEFAULT 800")
+                    val (enabled, duration) = legacySettings()
+                    db.execSQL(
+                        "UPDATE `albums` SET `crossfadeEnabled` = ?, `crossfadeDurationMs` = ?",
+                        arrayOf(if (enabled) 1 else 0, duration.coerceIn(100, 3000)),
+                    )
+                }
+            }
+
+        val MIGRATION_10_11 =
+            object : Migration(10, 11) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `slideMode` TEXT NOT NULL DEFAULT 'OFF'")
+                    db.execSQL("ALTER TABLE `albums` ADD COLUMN `slideSpeedPxPerSecond` REAL NOT NULL DEFAULT 10.0")
                 }
             }
     }

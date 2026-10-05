@@ -1,5 +1,6 @@
 package dev.backgrounded.data.repository
 
+import androidx.room.withTransaction
 import dev.backgrounded.data.db.AlbumEntity
 import dev.backgrounded.data.db.BackgroundEntity
 import dev.backgrounded.data.db.BackgroundPairEntity
@@ -51,6 +52,17 @@ class AlbumRepository
                 pairs.mapNotNull { pair -> pair.toModel(images) }
             }
 
+        fun observeAssets(albumId: Long): Flow<List<Background>> =
+            combine(db.backgroundDao().observeForAlbum(albumId), db.framingDao().observeForAlbum(albumId)) {
+                    backgrounds, framings ->
+                framedImages(backgrounds, framings).values.toList()
+            }
+
+        fun observeResolvedPairs(albumId: Long): Flow<List<BackgroundPair>> =
+            combine(observePairs(albumId), observeAlbum(albumId)) { pairs, album ->
+                pairs.map { assignFixedAssets(it, album) }
+            }
+
         @OptIn(ExperimentalCoroutinesApi::class)
         fun observePair(id: Long): Flow<BackgroundPair?> =
             db.pairDao().observe(id).flatMapLatest { entity ->
@@ -89,11 +101,16 @@ class AlbumRepository
             albumId: Long,
             surface: WallpaperSurface,
             assetId: Long?,
-        ) = update(albumId) {
-            when (surface) {
-                WallpaperSurface.HOME -> it.copy(fixedHomeAssetId = assetId)
-                WallpaperSurface.LOCK -> it.copy(fixedLockAssetId = assetId)
+        ) {
+            val before = getAlbum(albumId)
+            update(albumId) {
+                when (surface) {
+                    WallpaperSurface.HOME -> it.copy(fixedHomeAssetId = assetId)
+                    WallpaperSurface.LOCK -> it.copy(fixedLockAssetId = assetId)
+                }
             }
+            val previous = if (surface == WallpaperSurface.HOME) before?.fixedHomeAssetId else before?.fixedLockAssetId
+            if (previous != null && previous != assetId) deleteAssetIfUnreferenced(previous)
         }
 
         private suspend fun assignFixedAssets(
@@ -135,7 +152,8 @@ class AlbumRepository
             return entities.mapNotNull { pair -> pair.toModel(images) }
         }
 
-        suspend fun firstVisibleAlbumId(): Long? = observeAlbums().first().firstOrNull { !it.isHidden }?.id
+        suspend fun firstVisibleAlbumId(): Long? =
+            observeAlbums().first().firstOrNull { !it.isHidden && it.rotationEnabled }?.id
 
         suspend fun createAlbum(name: String): Long {
             val entity =
@@ -176,15 +194,40 @@ class AlbumRepository
             order: RotationOrder,
         ) = update(id) { it.copy(rotationOrder = order.name, shuffleRemainingCsv = null) }
 
+        suspend fun setRotationEnabled(
+            id: Long,
+            enabled: Boolean,
+        ) = update(id) { it.copy(rotationEnabled = enabled) }
+
+        suspend fun setCrossfade(
+            id: Long,
+            enabled: Boolean,
+            durationMs: Int,
+        ) = update(id) {
+            it.copy(crossfadeEnabled = enabled, crossfadeDurationMs = durationMs.coerceIn(100, 3000))
+        }
+
+        suspend fun setSlideOptions(
+            id: Long,
+            mode: dev.backgrounded.domain.model.SlideMode,
+            speedPxPerSecond: Float,
+        ) = update(id) {
+            it.copy(
+                slideMode = mode.name,
+                slideSpeedPxPerSecond = speedPxPerSecond.coerceIn(0.1f, 120f),
+            )
+        }
+
         suspend fun setSchedule(
             id: Long,
             type: ScheduleType,
-            intervalMinutes: Int?,
+            intervalSeconds: Int?,
             fixedTimes: List<LocalTime>,
         ) = update(id) {
             it.copy(
                 scheduleType = type.name,
-                intervalMinutes = intervalMinutes,
+                intervalMinutes = intervalSeconds?.div(60)?.takeIf { it > 0 },
+                intervalSeconds = intervalSeconds,
                 fixedTimesCsv = fixedTimes.joinToString(separator = ",") { time -> time.toString() },
             )
         }
@@ -242,19 +285,52 @@ class AlbumRepository
             return pairId
         }
 
+        suspend fun copyPair(
+            targetAlbumId: Long,
+            sourcePair: BackgroundPair,
+            home: Background,
+            lock: Background,
+        ): Long? {
+            val target = db.albumDao().get(targetAlbumId) ?: return null
+            val source = db.albumDao().get(sourcePair.albumId) ?: return null
+            if (source.isHidden && !target.isHidden) return null
+            return db.withTransaction {
+                val homeId = insertAsset(targetAlbumId, home)
+                val lockId = if (sourcePair.home.id == sourcePair.lock.id) homeId else insertAsset(targetAlbumId, lock)
+                val pairId =
+                    db.pairDao().insert(
+                        BackgroundPairEntity(
+                            albumId = targetAlbumId,
+                            homeBackgroundId = homeId,
+                            lockBackgroundId = lockId,
+                            sortIndex = db.pairDao().nextSortIndex(targetAlbumId),
+                            addedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                if (target.coverPairId == null) db.albumDao().update(target.copy(coverPairId = pairId))
+                pairId
+            }
+        }
+
+        suspend fun addStandaloneAsset(
+            albumId: Long,
+            image: Background,
+        ): Long = insertAsset(albumId, image)
+
         /** Replaces one slot of a pair with a newly inserted image asset. */
         suspend fun setPairImage(
             pairId: Long,
             surface: WallpaperSurface,
             image: Background,
-        ) {
-            val pair = db.pairDao().get(pairId) ?: return
-            val assetId = insertAsset(pair.albumId, image)
+        ): Boolean {
+            val pair = db.pairDao().get(pairId) ?: return false
             val oldAssetId =
                 when (surface) {
                     WallpaperSurface.HOME -> pair.homeBackgroundId
                     WallpaperSurface.LOCK -> pair.lockBackgroundId
                 }
+            if (db.managedSourceDao().get(oldAssetId) != null) return false
+            val assetId = insertAsset(pair.albumId, image)
             db.pairDao().update(
                 when (surface) {
                     WallpaperSurface.HOME -> pair.copy(homeBackgroundId = assetId)
@@ -262,6 +338,7 @@ class AlbumRepository
                 },
             )
             deleteAssetIfUnreferenced(oldAssetId)
+            return true
         }
 
         suspend fun updateAsset(background: Background) {
@@ -274,8 +351,14 @@ class AlbumRepository
             return entity.toModel(db.framingDao().listForBackground(entity.id))
         }
 
-        suspend fun deletePair(pairId: Long) {
-            val pair = db.pairDao().get(pairId) ?: return
+        suspend fun deletePair(pairId: Long): Boolean {
+            val pair = db.pairDao().get(pairId) ?: return false
+            if (listOf(pair.homeBackgroundId, pair.lockBackgroundId).any {
+                    db.managedSourceDao().get(it) != null
+                }
+            ) {
+                return false
+            }
             db.pairDao().delete(pair)
             deleteAssetIfUnreferenced(pair.homeBackgroundId)
             deleteAssetIfUnreferenced(pair.lockBackgroundId)
@@ -284,21 +367,26 @@ class AlbumRepository
                 val next = db.pairDao().listForAlbum(pair.albumId).firstOrNull()
                 db.albumDao().update(album.copy(coverPairId = next?.id))
             }
+            return true
         }
 
-        suspend fun deleteAlbum(id: Long) {
-            val refs =
-                db.pairDao().listForAlbum(id)
-                    .flatMap { listOf(it.homeBackgroundId, it.lockBackgroundId) }
-                    .distinct()
-                    .mapNotNull { assetId -> db.backgroundDao().get(assetId)?.storageRef }
+        suspend fun deleteAlbum(id: Long): Boolean {
+            if (db.managedSourceDao().forAlbum(id).isNotEmpty()) return false
+            val refs = db.backgroundDao().listForAlbum(id).map { it.storageRef }.distinct()
             db.albumDao().deleteById(id)
             val referenced = db.backgroundDao().allStorageRefs().toSet()
             refs.forEach { ref -> imageStore.deleteIfUnreferenced(ref, referenced) }
+            return true
         }
 
         suspend fun reorderPairs(orderedIds: List<Long>) {
-            orderedIds.forEachIndexed { index, id -> db.pairDao().updateSortIndex(id, index) }
+            db.withTransaction {
+                orderedIds.forEachIndexed { index, id -> db.pairDao().updateSortIndex(id, index) }
+            }
+        }
+
+        suspend fun discardUnreferencedImport(storageRef: String) {
+            imageStore.deleteIfUnreferenced(storageRef, db.backgroundDao().allStorageRefs().toSet())
         }
 
         private suspend fun insertAsset(
@@ -318,7 +406,10 @@ class AlbumRepository
 
         private suspend fun deleteAssetIfUnreferenced(assetId: Long) {
             if (db.pairDao().countForBackground(assetId) > 0) return
+            if (db.managedSourceDao().get(assetId) != null) return
             val asset = db.backgroundDao().get(assetId) ?: return
+            val album = db.albumDao().get(asset.albumId)
+            if (album?.fixedHomeAssetId == assetId || album?.fixedLockAssetId == assetId) return
             db.backgroundDao().delete(asset)
             imageStore.deleteIfUnreferenced(
                 storageRef = asset.storageRef,

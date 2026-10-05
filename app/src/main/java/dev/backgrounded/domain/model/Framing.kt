@@ -34,6 +34,8 @@ data class Framing(
     val scrollSpanFraction: Float,
     val gyroParallax: Boolean,
     val gyroIntensity: Int,
+    val mirrorX: Boolean = false,
+    val mirrorY: Boolean = false,
 ) {
     companion object {
         const val DEFAULT_BLUR_INTENSITY = 35
@@ -52,7 +54,7 @@ data class Framing(
                 stretchX = DEFAULT_STRETCH,
                 stretchY = DEFAULT_STRETCH,
                 rotationDegrees = 0,
-                backdrop = BackdropType.BLUR,
+                backdrop = BackdropType.NONE,
                 blurIntensity = DEFAULT_BLUR_INTENSITY,
                 backdropZoom = 1f,
                 backdropPanX = 0f,
@@ -65,6 +67,8 @@ data class Framing(
                 scrollSpanFraction = 1f,
                 gyroParallax = false,
                 gyroIntensity = DEFAULT_GYRO_INTENSITY,
+                mirrorX = false,
+                mirrorY = false,
             )
     }
 }

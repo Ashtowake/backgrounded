@@ -24,4 +24,13 @@ data class AlbumEntity(
     val lastChangedAt: Long,
     val shuffleRemainingCsv: String?,
     val sortIndex: Int,
+    @ColumnInfo(defaultValue = "1") val rotationEnabled: Boolean = true,
+    val intervalSeconds: Int? = null,
+    // Legacy columns from schema 10; retained so existing databases migrate without rebuilding album foreign keys.
+    @ColumnInfo(defaultValue = "'CROSSFADE'") val intervalTransition: String = "CROSSFADE",
+    @ColumnInfo(defaultValue = "800") val intervalTransitionMs: Int = 800,
+    @ColumnInfo(defaultValue = "'OFF'") val slideMode: String = "OFF",
+    @ColumnInfo(defaultValue = "10.0") val slideSpeedPxPerSecond: Float = 10f,
+    @ColumnInfo(defaultValue = "1") val crossfadeEnabled: Boolean = true,
+    @ColumnInfo(defaultValue = "800") val crossfadeDurationMs: Int = 800,
 )

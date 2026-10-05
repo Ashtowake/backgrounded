@@ -5,11 +5,13 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.backgrounded.core.security.EncryptedImageStore
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.SourceType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
@@ -20,6 +22,7 @@ class BitmapLoader
     @Inject
     constructor(
         @ApplicationContext private val context: Context,
+        private val encryptedImageStore: EncryptedImageStore,
     ) {
         suspend fun decode(
             background: Background,
@@ -27,7 +30,14 @@ class BitmapLoader
             targetHeight: Int,
         ): Bitmap? =
             withContext(Dispatchers.IO) {
-                val source = source(background.storageRef, background.sourceType) ?: return@withContext null
+                val source =
+                    if (background.sourceType == SourceType.ENCRYPTED_IMPORT) {
+                        encryptedImageStore.open(background)?.use {
+                            ImageDecoder.createSource(ByteBuffer.wrap(it.readBytes()))
+                        }
+                    } else {
+                        source(background.storageRef, background.sourceType)
+                    } ?: return@withContext null
                 runCatching {
                     ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -59,6 +69,8 @@ class BitmapLoader
             withContext(Dispatchers.IO) {
                 when (background.sourceType) {
                     SourceType.IMPORT -> File(background.storageRef).isFile
+                    SourceType.ENCRYPTED_IMPORT ->
+                        File(background.storageRef).isFile && encryptedImageStore.open(background)?.use { true } == true
                     SourceType.SAF_LINK ->
                         runCatching {
                             context.contentResolver.openAssetFileDescriptor(Uri.parse(background.storageRef), "r")
@@ -73,6 +85,7 @@ class BitmapLoader
         ): ImageDecoder.Source? =
             when (sourceType) {
                 SourceType.IMPORT -> File(storageRef).takeIf { it.isFile }?.let { ImageDecoder.createSource(it) }
+                SourceType.ENCRYPTED_IMPORT -> null
                 SourceType.SAF_LINK ->
                     runCatching {
                         ImageDecoder.createSource(context.contentResolver, Uri.parse(storageRef))

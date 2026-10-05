@@ -11,6 +11,15 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class FillAlignerTest {
     @Test
+    fun `alignment preserves manually chosen image size and fit mode`() {
+        val framing = Framing.DEFAULT.copy(fitMode = FitMode.FIT, zoom = 0.6f, panX = 0.8f)
+        val aligned = FillAligner.align(framing, 200, 200, 100, 100)
+        assertEquals(FitMode.FIT, aligned.fitMode)
+        assertEquals(0.6f, aligned.zoom, 0.0001f)
+        assertEquals(0f, aligned.panX, 0.0001f)
+    }
+
+    @Test
     fun `a gap is closed by enlarging until the frame is covered`() {
         val framing = Framing.DEFAULT.copy(fitMode = FitMode.FIT, zoom = 0.5f)
         val filled = FillAligner.fill(framing, 200, 200, 100, 100)

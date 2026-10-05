@@ -43,6 +43,19 @@ object ScrollGeometry {
         return (fraction * scroll.slackPixels).toInt().coerceIn(0, scroll.slackPixels)
     }
 
+    /** Keeps both ends of a wide image reachable when it overflows the scroll band. */
+    fun edgeShiftPixels(
+        destinationLeft: Float,
+        destinationRight: Float,
+        bandWidth: Int,
+        scroll: Scroll,
+        translation: Int,
+    ): Float {
+        if (scroll.slackPixels <= 0 || destinationRight - destinationLeft <= bandWidth) return 0f
+        val fraction = translation.toFloat() / scroll.slackPixels
+        return -destinationLeft * (1f - fraction) + (bandWidth - destinationRight) * fraction
+    }
+
     private fun percentToPixels(
         percent: Int,
         width: Int,

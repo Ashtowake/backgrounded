@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class NextAlbumResult { CHANGED, AUTH_REQUIRED, UNCHANGED }
+
 @Singleton
 class NextAlbum
     @Inject
@@ -15,16 +17,24 @@ class NextAlbum
         private val settingsStore: SettingsStore,
         private val applyNextBackground: ApplyNextBackground,
     ) {
-        suspend operator fun invoke(trigger: Trigger = Trigger.ALBUM_SWITCH): Boolean {
+        suspend operator fun invoke(
+            trigger: Trigger = Trigger.ALBUM_SWITCH,
+            authenticated: Boolean = false,
+        ): NextAlbumResult {
             val settings = settingsStore.settings.first()
-            val albums = albumRepository.observeAlbums().first()
-            if (albums.isEmpty()) return false
+            val albums = albumRepository.observeAlbums().first().filter { it.rotationEnabled }
+            if (albums.isEmpty()) return NextAlbumResult.UNCHANGED
             val currentId = settings.activeAlbumId
-            val cycle = albums.filter { !it.isHidden || it.id == currentId }
-            if (cycle.isEmpty()) return false
-            val index = cycle.indexOfFirst { it.id == currentId }
-            val next = if (index < 0) cycle.first() else cycle[(index + 1) % cycle.size]
-            settingsStore.setActiveAlbum(next.id)
-            return applyNextBackground(trigger, albumIdOverride = next.id)
+            val index = albums.indexOfFirst { it.id == currentId }
+            albums.indices.forEach { step ->
+                val next = albums[(index + step + 1) % albums.size]
+                if (settings.authenticateHiddenSwitch && next.isHidden && next.id != currentId && !authenticated) {
+                    return NextAlbumResult.AUTH_REQUIRED
+                }
+                if (applyNextBackground(trigger, albumIdOverride = next.id)) {
+                    return NextAlbumResult.CHANGED
+                }
+            }
+            return NextAlbumResult.UNCHANGED
         }
     }

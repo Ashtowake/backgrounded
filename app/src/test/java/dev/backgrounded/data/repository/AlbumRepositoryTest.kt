@@ -22,6 +22,30 @@ import org.robolectric.RuntimeEnvironment
 @RunWith(RobolectricTestRunner::class)
 class AlbumRepositoryTest {
     @Test
+    fun `crossfade settings are independent for each album`() =
+        runBlocking {
+            val context: Context = RuntimeEnvironment.getApplication()
+            val database =
+                Room.inMemoryDatabaseBuilder(context, BackgroundedDatabase::class.java)
+                    .allowMainThreadQueries()
+                    .build()
+            try {
+                val repository = AlbumRepository(database, ImageStore(context))
+                val first = repository.createAlbum("First")
+                val second = repository.createAlbum("Second")
+                repository.setCrossfade(first, false, 1200)
+                repository.setCrossfade(second, true, 2500)
+
+                assertEquals(false, repository.getAlbum(first)!!.crossfadeEnabled)
+                assertEquals(1200, repository.getAlbum(first)!!.crossfadeDurationMs)
+                assertEquals(true, repository.getAlbum(second)!!.crossfadeEnabled)
+                assertEquals(2500, repository.getAlbum(second)!!.crossfadeDurationMs)
+            } finally {
+                database.close()
+            }
+        }
+
+    @Test
     fun `albums and pairs round trip`() =
         runBlocking {
             val context: Context = RuntimeEnvironment.getApplication()
@@ -91,6 +115,28 @@ class AlbumRepositoryTest {
                 val albumId = repository.createAlbum("Hidden")
                 repository.setHidden(albumId, true)
                 assertEquals(true, repository.getAlbum(albumId)?.isHidden)
+            } finally {
+                database.close()
+            }
+        }
+
+    @Test
+    fun `reordering pairs changes the rotation list order`() =
+        runBlocking {
+            val context: Context = RuntimeEnvironment.getApplication()
+            val database =
+                Room.inMemoryDatabaseBuilder(context, BackgroundedDatabase::class.java)
+                    .allowMainThreadQueries().build()
+            try {
+                val repository = AlbumRepository(database, ImageStore(context))
+                val albumId = repository.createAlbum("Order")
+                val first = repository.addPair(albumId, background(albumId).copy(displayName = "first"))
+                val second = repository.addPair(albumId, background(albumId).copy(displayName = "second"))
+                val third = repository.addPair(albumId, background(albumId).copy(displayName = "third"))
+
+                repository.reorderPairs(listOf(third, first, second))
+
+                assertEquals(listOf(third, first, second), repository.pairsFor(albumId).map { it.id })
             } finally {
                 database.close()
             }

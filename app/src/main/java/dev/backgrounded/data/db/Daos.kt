@@ -198,3 +198,60 @@ interface HistoryDao {
     @Query("DELETE FROM history")
     suspend fun clear()
 }
+
+@Dao
+interface LinkedFolderDao {
+    @Query("SELECT * FROM linked_folders WHERE albumId = :albumId ORDER BY id")
+    suspend fun forAlbum(albumId: Long): List<LinkedFolderEntity>
+
+    @Query("SELECT * FROM linked_folders WHERE albumId = :albumId ORDER BY id")
+    fun observeForAlbum(albumId: Long): Flow<List<LinkedFolderEntity>>
+
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insert(entity: LinkedFolderEntity): Long
+
+    @Query("UPDATE linked_folders SET lastScanAt = :at WHERE id = :id")
+    suspend fun markScanned(
+        id: Long,
+        at: Long,
+    )
+
+    @Query("DELETE FROM linked_folders WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+@Dao
+interface ManagedSourceDao {
+    @Query("SELECT * FROM managed_sources WHERE assetId = :assetId")
+    suspend fun get(assetId: Long): ManagedSourceEntity?
+
+    @Query("SELECT m.* FROM managed_sources m INNER JOIN backgrounds b ON b.id = m.assetId WHERE b.albumId = :albumId")
+    suspend fun forAlbum(albumId: Long): List<ManagedSourceEntity>
+
+    @Query(
+        "SELECT m.* FROM managed_sources m INNER JOIN backgrounds b ON b.id = m.assetId " +
+            "INNER JOIN albums a ON a.id = b.albumId " +
+            "WHERE m.moveState NOT IN ('MOVED', 'MOVED_IMPORT', 'MOVED_FILE') " +
+            "OR a.isHidden = 0 " +
+            "ORDER BY m.originalName",
+    )
+    fun observeUnresolved(): Flow<List<ManagedSourceEntity>>
+
+    @Upsert
+    suspend fun upsert(entity: ManagedSourceEntity)
+
+    @Query("DELETE FROM managed_sources WHERE assetId = :assetId")
+    suspend fun delete(assetId: Long)
+}
+
+@Dao
+interface EncryptedAssetDao {
+    @Query("SELECT * FROM encrypted_assets WHERE assetId = :assetId")
+    suspend fun get(assetId: Long): EncryptedAssetEntity?
+
+    @Upsert
+    suspend fun upsert(entity: EncryptedAssetEntity)
+
+    @Query("DELETE FROM encrypted_assets WHERE assetId = :assetId")
+    suspend fun delete(assetId: Long)
+}

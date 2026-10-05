@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="close">Close</string>
     <string name="app_name">Backgrounded</string>
     <string name="wallpaper_label">Backgrounded</string>
     <string name="wallpaper_description">Album wallpaper rotation</string>
@@ -165,7 +166,7 @@
     <string name="license">License</string>
     <string name="license_value">GPL-3.0-or-later</string>
     <string name="source_code">Source code</string>
-    <string name="permissions_none">Permissions: none</string>
+    <string name="permissions_none">Permissions: biometric authentication; optional all-files access</string>
     <string name="import_finished">Import finished</string>
     <string name="import_failed">Import failed</string>
     <string name="export_finished">Export finished</string>

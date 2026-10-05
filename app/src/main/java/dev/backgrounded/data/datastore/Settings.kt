@@ -13,8 +13,6 @@ data class Settings(
     val doubleTapEnabled: Boolean,
     val doubleTapMode: DoubleTapMode,
     val doubleTapAction: GestureAction,
-    val crossfadeEnabled: Boolean,
-    val crossfadeDurationMs: Int,
     val lockDimDefault: Boolean,
     val externalControlEnabled: Boolean,
     val widgetIconSource: String,
@@ -27,6 +25,10 @@ data class Settings(
     val liveWallpaperLock: Boolean,
     val nextTriggerAt: Long,
     val lastError: String?,
+    val hideSourcesSystemwide: Boolean,
+    val authenticateHiddenSwitch: Boolean,
+    val encryptHidden: Boolean,
+    val debugDiagnostics: Boolean,
 ) {
     companion object {
         val DEFAULTS =
@@ -45,9 +47,7 @@ data class Settings(
                 doubleTapEnabled = true,
                 doubleTapMode = DoubleTapMode.BACKGROUND,
                 doubleTapAction = GestureAction.NEXT,
-                crossfadeEnabled = true,
-                crossfadeDurationMs = 800,
-                lockDimDefault = true,
+                lockDimDefault = false,
                 externalControlEnabled = false,
                 widgetIconSource = "builtin:next",
                 widgetIconAlpha = 255,
@@ -59,6 +59,10 @@ data class Settings(
                 liveWallpaperLock = false,
                 nextTriggerAt = 0L,
                 lastError = null,
+                hideSourcesSystemwide = false,
+                authenticateHiddenSwitch = true,
+                encryptHidden = false,
+                debugDiagnostics = false,
             )
     }
 }

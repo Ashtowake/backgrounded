@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
@@ -37,6 +38,33 @@ class ImageImporter
         @ApplicationContext private val context: Context,
         private val imageStore: ImageStore,
     ) {
+        suspend fun importStream(
+            input: InputStream,
+            displayName: String,
+        ): ImportedImage? =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val temp = File(imageStore.imagesDir, "copy-${UUID.randomUUID()}.tmp")
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    input.use { stream -> temp.outputStream().use { copyWithDigest(stream, it, digest) } }
+                    val hash = digest.digest().toHex()
+                    val extension =
+                        displayName.substringAfterLast('.', "jpg").lowercase()
+                            .takeIf { it in setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "gif") }
+                            ?: "jpg"
+                    val target = File(imageStore.imagesDir, "$hash.$extension")
+                    if (target.isFile && target.sha256() == hash) {
+                        temp.delete()
+                    } else if (!temp.renameTo(target)) {
+                        temp.copyTo(target, overwrite = true)
+                        temp.delete()
+                    }
+                    check(target.sha256() == hash)
+                    val bounds = ImageStore.readDimensions(target)
+                    ImportedImage(target.absolutePath, hash, bounds.first, bounds.second, 0, displayName)
+                }.getOrNull()
+            }
+
         suspend fun import(uri: Uri): ImportedImage? =
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -49,9 +77,23 @@ class ImageImporter
                     val hash = digest.digest().toHex()
                     val extension = extensionFor(resolver.getType(uri))
                     val target = File(imageStore.imagesDir, "$hash.$extension")
-                    if (target.exists()) {
+                    val existingValid =
+                        target.isFile &&
+                            runCatching {
+                                val currentDigest = MessageDigest.getInstance("SHA-256")
+                                target.inputStream().use { input ->
+                                    val buffer = ByteArray(BUFFER_SIZE)
+                                    while (true) {
+                                        val count = input.read(buffer)
+                                        if (count < 0) break
+                                        currentDigest.update(buffer, 0, count)
+                                    }
+                                }
+                                currentDigest.digest().toHex() == hash
+                            }.getOrDefault(false)
+                    if (existingValid) {
                         temp.delete()
-                    } else if (!temp.renameTo(target)) {
+                    } else if (target.exists() || !temp.renameTo(target)) {
                         temp.copyTo(target, overwrite = true)
                         temp.delete()
                     }
@@ -70,10 +112,12 @@ class ImageImporter
         suspend fun link(uri: Uri): LinkedImage? =
             withContext(Dispatchers.IO) {
                 runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
                     val bounds = ImageStore.readDimensions(context, uri)
                     LinkedImage(
                         uri = uri.toString(),
@@ -116,6 +160,19 @@ class ImageImporter
         }
 
         private fun ByteArray.toHex(): String = joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+        private fun File.sha256(): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            inputStream().use { input ->
+                val buffer = ByteArray(BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().toHex()
+        }
 
         private companion object {
             const val BUFFER_SIZE = 64 * 1024

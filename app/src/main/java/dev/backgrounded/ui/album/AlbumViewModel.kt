@@ -1,23 +1,35 @@
 package dev.backgrounded.ui.album
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.backgrounded.core.display.DisplayRepository
 import dev.backgrounded.core.image.ThumbnailCache
+import dev.backgrounded.core.security.EncryptedImageStore
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.data.importer.ImageImporter
 import dev.backgrounded.data.importer.ImportedImage
+import dev.backgrounded.data.importer.LinkedFolderScanner
 import dev.backgrounded.data.importer.LinkedImage
+import dev.backgrounded.data.importer.ManagedFolderStore
+import dev.backgrounded.data.importer.ManagedSourceMover
+import dev.backgrounded.data.importer.SafFolders
 import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.domain.model.Album
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.BackgroundPair
+import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.SourceType
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.model.WallpaperSurface
+import dev.backgrounded.domain.render.BackgroundRenderer
+import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.domain.usecase.ApplyPair
 import dev.backgrounded.ui.nav.AlbumRoute
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,20 +37,31 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+data class PairSource(val albumName: String, val pair: BackgroundPair)
+
 @HiltViewModel
+@Suppress("LongParameterList")
 class AlbumViewModel
     @Inject
     constructor(
+        @ApplicationContext private val context: Context,
         savedStateHandle: SavedStateHandle,
         private val albumRepository: AlbumRepository,
         private val imageImporter: ImageImporter,
         private val thumbnailCache: ThumbnailCache,
+        private val displayRepository: DisplayRepository,
+        private val backgroundRenderer: BackgroundRenderer,
         private val settingsStore: SettingsStore,
         private val applyPair: ApplyPair,
+        private val linkedFolderScanner: LinkedFolderScanner,
+        private val managedFolderStore: ManagedFolderStore,
+        private val managedSourceMover: ManagedSourceMover,
+        private val encryptedImages: EncryptedImageStore,
     ) : ViewModel() {
         private val albumId: Long = savedStateHandle.toRoute<AlbumRoute>().albumId
 
@@ -46,12 +69,129 @@ class AlbumViewModel
             albumRepository.observeAlbum(albumId)
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
 
+        val hideSourcesEnabled: StateFlow<Boolean> =
+            settingsStore.settings.map { it.hideSourcesSystemwide }
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), false)
+
         val pairs: StateFlow<List<BackgroundPair>> =
-            albumRepository.observePairs(albumId)
+            albumRepository.observeResolvedPairs(albumId)
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
         private val mutableMessage = MutableStateFlow<Message?>(null)
         val message: StateFlow<Message?> = mutableMessage.asStateFlow()
+        private val mutableFileError = MutableStateFlow<String?>(null)
+        val fileError: StateFlow<String?> = mutableFileError.asStateFlow()
+        val thumbnailVersion: StateFlow<Int> = thumbnailCache.version
+        private val mutablePairSources = MutableStateFlow<List<PairSource>>(emptyList())
+        val pairSources: StateFlow<List<PairSource>> = mutablePairSources.asStateFlow()
+
+        fun loadPairSources() {
+            viewModelScope.launch {
+                val targetHidden = albumRepository.getAlbum(albumId)?.isHidden == true
+                mutablePairSources.value =
+                    albumRepository.observeAlbums().first()
+                        .filter { it.id != albumId && (targetHidden || !it.isHidden) }
+                        .flatMap { sourceAlbum ->
+                            albumRepository.pairsFor(sourceAlbum.id).map { pair ->
+                                PairSource(sourceAlbum.name, pair)
+                            }
+                        }
+            }
+        }
+
+        fun addExistingPair(pair: BackgroundPair) {
+            viewModelScope.launch {
+                val targetHidden = albumRepository.getAlbum(albumId)?.isHidden == true
+                if (albumRepository.getAlbum(pair.albumId)?.isHidden == true && !targetHidden) return@launch
+                val home = prepareCopy(pair.home) ?: return@launch
+                val lock =
+                    if (pair.home.id == pair.lock.id) {
+                        home
+                    } else {
+                        prepareCopy(pair.lock) ?: run {
+                            albumRepository.discardUnreferencedImport(home.storageRef)
+                            return@launch
+                        }
+                    }
+                val newId =
+                    albumRepository.copyPair(albumId, pair, home, lock) ?: run {
+                        albumRepository.discardUnreferencedImport(home.storageRef)
+                        if (lock.storageRef != home.storageRef) {
+                            albumRepository.discardUnreferencedImport(lock.storageRef)
+                        }
+                        return@launch
+                    }
+                if (targetHidden && settingsStore.settings.first().encryptHidden) {
+                    val copied = albumRepository.getPair(newId) ?: return@launch
+                    val ids = listOf(copied.home.id, copied.lock.id).distinct()
+                    if (!ids.all { encryptedImages.encryptAsset(it) }) {
+                        albumRepository.deletePair(newId)
+                        mutableFileError.value = "Could not encrypt copied pair"
+                        return@launch
+                    }
+                }
+                thumbnailCache.evictAll()
+            }
+        }
+
+        private suspend fun prepareCopy(source: Background): Background? {
+            val input =
+                when (source.sourceType) {
+                    SourceType.IMPORT -> runCatching { java.io.File(source.storageRef).inputStream() }.getOrNull()
+                    SourceType.SAF_LINK ->
+                        runCatching {
+                            context.contentResolver.openInputStream(Uri.parse(source.storageRef))
+                        }.getOrNull()
+                    SourceType.ENCRYPTED_IMPORT -> encryptedImages.openAsset(source.id)
+                } ?: run {
+                    mutableFileError.value =
+                        if (source.sourceType == SourceType.ENCRYPTED_IMPORT) {
+                            "Unlock hidden images before copying this pair"
+                        } else {
+                            "Could not read an image in this pair"
+                        }
+                    return null
+                }
+            val copied = imageImporter.importStream(input, source.displayName) ?: return null
+            return source.copy(
+                id = 0,
+                albumId = albumId,
+                sourceType = SourceType.IMPORT,
+                storageRef = copied.filePath,
+                sha256 = copied.sha256,
+            )
+        }
+
+        fun currentDisplay(): DisplayTarget = displayRepository.activeTarget()
+
+        fun displayAspect(target: DisplayTarget): Float {
+            val info = displayRepository.targets().firstOrNull { it.target == target }
+            return if (info != null && info.width > 0 && info.height > 0) {
+                info.width.toFloat() / info.height
+            } else {
+                if (target == DisplayTarget.COVER) 0.46f else 0.96f
+            }
+        }
+
+        fun preview(
+            background: Background,
+            surface: WallpaperSurface,
+            target: DisplayTarget,
+            aspect: Float,
+        ): Bitmap? {
+            val source = thumbnailCache.get(background, PREVIEW_SOURCE_SIZE) ?: return null
+            val framing = background.framingFor(target, surface)
+            val width = (PREVIEW_HEIGHT * aspect).toInt().coerceAtLeast(1)
+            return backgroundRenderer.renderWindow(
+                framing = framing,
+                source = source,
+                viewport = BackgroundRenderer.Viewport(width, PREVIEW_HEIGHT),
+                scroll = ScrollGeometry.scrollFor(framing, width),
+                scrollOffset = 0.5f,
+                dim = background.dimForLock && surface == WallpaperSurface.LOCK,
+                allowScroll = surface == WallpaperSurface.HOME,
+            )
+        }
 
         fun addImages(uris: List<Uri>) {
             if (uris.isEmpty()) return
@@ -61,10 +201,13 @@ class AlbumViewModel
                 var skipped = 0
                 uris.forEach { uri ->
                     val imported = imageImporter.import(uri)
-                    if (imported == null || albumRepository.findAssetByHash(imported.sha256) != null) {
+                    if (imported == null) {
                         skipped++
                     } else {
-                        albumRepository.addPair(albumId, imported.toAsset(dimDefault))
+                        val pairId = albumRepository.addPair(albumId, imported.toAsset(dimDefault))
+                        if (album.value?.isHidden == true && settingsStore.settings.first().encryptHidden) {
+                            albumRepository.getPair(pairId)?.home?.id?.let { encryptedImages.encryptAsset(it) }
+                        }
                         added++
                     }
                 }
@@ -83,8 +226,103 @@ class AlbumViewModel
                     if (linked == null) {
                         skipped++
                     } else {
-                        albumRepository.addPair(albumId, linked.toAsset(dimDefault))
+                        val pairId = albumRepository.addPair(albumId, linked.toAsset(dimDefault))
+                        if (album.value?.isHidden == true && settingsStore.settings.first().encryptHidden) {
+                            albumRepository.getPair(pairId)?.home?.id?.let { encryptedImages.encryptAsset(it) }
+                        }
                         added++
+                    }
+                }
+                mutableMessage.value = Message(added, skipped)
+            }
+        }
+
+        fun linkFolder(uri: Uri) {
+            if (!managedFolderStore.grant(uri)) {
+                mutableMessage.value = Message(0, 1)
+                return
+            }
+            viewModelScope.launch {
+                val added = linkedFolderScanner.link(albumId, uri)
+                mutableMessage.value = Message(added, 0)
+            }
+        }
+
+        fun moveSelectedFromFolder(
+            uris: List<Uri>,
+            treeUri: Uri,
+        ) {
+            if (!managedFolderStore.grant(treeUri)) {
+                mutableMessage.value = Message(0, uris.size)
+                return
+            }
+            viewModelScope.launch {
+                val candidates = SafFolders.listImages(context, treeUri)
+                val dim = settingsStore.settings.first().lockDimDefault
+                var added = 0
+                var skipped = 0
+                uris.forEach { selected ->
+                    val picked = imageImporter.import(selected)
+                    val source =
+                        candidates.firstOrNull { candidate ->
+                            picked != null &&
+                                runCatching {
+                                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                                    context.contentResolver.openInputStream(candidate)?.use { input ->
+                                        val buffer = ByteArray(64 * 1024)
+                                        while (true) {
+                                            val read = input.read(buffer)
+                                            if (read < 0) break
+                                            digest.update(buffer, 0, read)
+                                        }
+                                        digest.digest().joinToString("") { "%02x".format(it) }
+                                    } == picked.sha256
+                                }.getOrDefault(false)
+                        }
+                    val linked = source?.let { imageImporter.link(it) }
+                    if (linked == null) {
+                        skipped++
+                    } else {
+                        val pairId = albumRepository.addPair(albumId, linked.toAsset(dim))
+                        val assetId = albumRepository.getPair(pairId)?.home?.id
+                        if (assetId != null && managedSourceMover.move(assetId, treeUri, source)) {
+                            if (settingsStore.settings.first().encryptHidden) encryptedImages.encryptAsset(assetId)
+                            added++
+                        } else {
+                            if (albumRepository.deletePair(pairId)) {
+                                skipped++
+                            } else {
+                                added++
+                                mutableFileError.value = "Source could not be removed; the private copy was retained"
+                            }
+                        }
+                    }
+                }
+                mutableMessage.value = Message(added, skipped)
+            }
+        }
+
+        fun moveSelectedWithFullAccess(uris: List<Uri>) {
+            viewModelScope.launch {
+                val dim = settingsStore.settings.first().lockDimDefault
+                var added = 0
+                var skipped = 0
+                uris.forEach { selected ->
+                    val imported = imageImporter.import(selected)
+                    if (imported == null) {
+                        skipped++
+                        return@forEach
+                    }
+                    val pairId = albumRepository.addPair(albumId, imported.toAsset(dim))
+                    val assetId = albumRepository.getPair(pairId)?.home?.id
+                    if (assetId != null && managedSourceMover.moveAssetFromFullAccess(assetId)) {
+                        if (settingsStore.settings.first().encryptHidden) encryptedImages.encryptAsset(assetId)
+                        added++
+                    } else if (albumRepository.deletePair(pairId)) {
+                        skipped++
+                    } else {
+                        added++
+                        mutableFileError.value = "Source could not be removed; the private copy was retained"
                     }
                 }
                 mutableMessage.value = Message(added, skipped)
@@ -99,7 +337,12 @@ class AlbumViewModel
             viewModelScope.launch {
                 val dimDefault = settingsStore.settings.first().lockDimDefault
                 val imported = imageImporter.import(uri) ?: return@launch
-                albumRepository.setPairImage(pairId, surface, imported.toAsset(dimDefault))
+                if (!albumRepository.setPairImage(pairId, surface, imported.toAsset(dimDefault))) {
+                    albumRepository.discardUnreferencedImport(imported.filePath)
+                    mutableFileError.value = "Restore the moved source before replacing this image"
+                    return@launch
+                }
+                encryptSlotIfNeeded(pairId, surface)
                 thumbnailCache.evictAll()
             }
         }
@@ -112,9 +355,22 @@ class AlbumViewModel
             viewModelScope.launch {
                 val dimDefault = settingsStore.settings.first().lockDimDefault
                 val linked = imageImporter.link(uri) ?: return@launch
-                albumRepository.setPairImage(pairId, surface, linked.toAsset(dimDefault))
+                if (!albumRepository.setPairImage(pairId, surface, linked.toAsset(dimDefault))) {
+                    mutableFileError.value = "Restore the moved source before replacing this image"
+                    return@launch
+                }
+                encryptSlotIfNeeded(pairId, surface)
                 thumbnailCache.evictAll()
             }
+        }
+
+        private suspend fun encryptSlotIfNeeded(
+            pairId: Long,
+            surface: WallpaperSurface,
+        ) {
+            if (album.value?.isHidden != true || !settingsStore.settings.first().encryptHidden) return
+            val pair = albumRepository.getPair(pairId) ?: return
+            encryptedImages.encryptAsset(if (surface == WallpaperSurface.HOME) pair.home.id else pair.lock.id)
         }
 
         fun applyNow(pairId: Long) {
@@ -127,9 +383,16 @@ class AlbumViewModel
 
         fun deletePair(pairId: Long) {
             viewModelScope.launch {
-                albumRepository.deletePair(pairId)
+                if (!albumRepository.deletePair(pairId)) {
+                    mutableFileError.value = "Restore moved source photos before deleting this pair"
+                    return@launch
+                }
                 thumbnailCache.evictAll()
             }
+        }
+
+        fun clearFileError() {
+            mutableFileError.value = null
         }
 
         fun move(
@@ -142,6 +405,25 @@ class AlbumViewModel
             if (index < 0 || target !in current.indices) return
             val reordered = current.toMutableList().apply { add(target, removeAt(index)) }
             viewModelScope.launch { albumRepository.reorderPairs(reordered.map { it.id }) }
+        }
+
+        fun moveTo(
+            pairId: Long,
+            targetId: Long,
+        ) {
+            val ordered = pairs.value.toMutableList()
+            val from = ordered.indexOfFirst { it.id == pairId }
+            if (from < 0 || pairId == targetId) return
+            val moved = ordered.removeAt(from)
+            val to = ordered.indexOfFirst { it.id == targetId }
+            if (to < 0) return
+            ordered.add(to, moved)
+            viewModelScope.launch { albumRepository.reorderPairs(ordered.map { it.id }) }
+        }
+
+        fun reorder(orderedIds: List<Long>) {
+            if (orderedIds.toSet() != pairs.value.map { it.id }.toSet()) return
+            viewModelScope.launch { albumRepository.reorderPairs(orderedIds) }
         }
 
         fun clearMessage() {
@@ -219,5 +501,7 @@ class AlbumViewModel
 
         private companion object {
             const val STOP_TIMEOUT_MILLIS = 5_000L
+            const val PREVIEW_SOURCE_SIZE = 512
+            const val PREVIEW_HEIGHT = 256
         }
     }

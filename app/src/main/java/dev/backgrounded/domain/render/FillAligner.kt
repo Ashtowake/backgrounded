@@ -5,13 +5,41 @@ import dev.backgrounded.domain.model.FitMode
 import dev.backgrounded.domain.model.Framing
 import kotlin.math.max
 
-/**
- * Double-tap helper: enlarges the image by only the factor needed to cover the frame and shifts
- * it the minimum distance so that missing edges are pushed out, keeping the other edges aligned.
- * With page scrolling the coverage target is the whole scroll band, while the image itself stays
- * framed against the screen ([outWidth]).
- */
+/** Aligns the current framing; legacy [fill] remains available for explicit coverage calculations. */
 object FillAligner {
+    /** Snaps the existing image to the viewport without changing its size or fit mode. */
+    fun align(
+        framing: Framing,
+        outWidth: Int,
+        outHeight: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+    ): Framing {
+        if (outWidth <= 0 || outHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return framing
+        val destination = placement(framing, outWidth, outHeight, sourceWidth, sourceHeight).destination
+        val shiftX = edgeCorrection(destination.left, destination.right, outWidth.toFloat())
+        val shiftY = edgeCorrection(destination.top, destination.bottom, outHeight.toFloat())
+        return framing.copy(
+            panX = (framing.panX + shiftX / outWidth).coerceIn(-MAX_PAN, MAX_PAN),
+            panY = (framing.panY + shiftY / outHeight).coerceIn(-MAX_PAN, MAX_PAN),
+        )
+    }
+
+    private fun edgeCorrection(
+        start: Float,
+        end: Float,
+        frameSize: Float,
+    ): Float =
+        if (end - start < frameSize) {
+            (frameSize - (end - start)) / 2f - start
+        } else {
+            when {
+                start > 0f -> -start
+                end < frameSize -> frameSize - end
+                else -> 0f
+            }
+        }
+
     fun fill(
         framing: Framing,
         outWidth: Int,

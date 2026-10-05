@@ -31,7 +31,7 @@ class ChangeAlarmReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         applicationScope.launch {
             try {
-                applyNextBackground(Trigger.TIMER)
+                applyNextBackground(Trigger.TIMER, expectedScheduleAt = intent.getLongExtra(EXTRA_EXPECTED_AT, 0L))
             } finally {
                 changeScheduler.rearm()
                 pendingResult.finish()
@@ -41,5 +41,6 @@ class ChangeAlarmReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION = "dev.backgrounded.action.CHANGE_ALARM"
+        const val EXTRA_EXPECTED_AT = "expected_schedule_at"
     }
 }

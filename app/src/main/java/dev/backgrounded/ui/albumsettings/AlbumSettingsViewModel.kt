@@ -1,21 +1,29 @@
 package dev.backgrounded.ui.albumsettings
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.backgrounded.core.security.EncryptedImageStore
+import dev.backgrounded.data.datastore.SettingsStore
+import dev.backgrounded.data.importer.ImageImporter
 import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.domain.model.Album
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.RotationOrder
 import dev.backgrounded.domain.model.ScheduleType
+import dev.backgrounded.domain.model.SlideMode
+import dev.backgrounded.domain.model.SourceType
 import dev.backgrounded.domain.model.UnlockPolicy
 import dev.backgrounded.domain.model.WallpaperSurface
+import dev.backgrounded.schedule.ChangeScheduler
 import dev.backgrounded.ui.nav.AlbumSettingsRoute
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalTime
@@ -27,17 +35,53 @@ class AlbumSettingsViewModel
     constructor(
         savedStateHandle: SavedStateHandle,
         private val albumRepository: AlbumRepository,
+        private val imageImporter: ImageImporter,
+        private val settingsStore: SettingsStore,
+        private val encryptedImages: EncryptedImageStore,
+        private val changeScheduler: ChangeScheduler,
     ) : ViewModel() {
         private val albumId: Long = savedStateHandle.toRoute<AlbumSettingsRoute>().albumId
+        val deleteError = MutableStateFlow(false)
 
         val album: StateFlow<Album?> =
             albumRepository.observeAlbum(albumId)
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), null)
 
         val assets: StateFlow<List<Background>> =
-            albumRepository.observePairs(albumId)
-                .map { pairs -> pairs.flatMap { listOf(it.home, it.lock) }.distinctBy { it.id } }
+            albumRepository.observeAssets(albumId)
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+
+        fun pickFixedAsset(
+            surface: WallpaperSurface,
+            uri: Uri,
+        ) {
+            viewModelScope.launch {
+                val imported = imageImporter.import(uri) ?: return@launch
+                val asset =
+                    Background(
+                        id = 0,
+                        albumId = albumId,
+                        sourceType = SourceType.IMPORT,
+                        storageRef = imported.filePath,
+                        displayName = imported.displayName,
+                        sha256 = imported.sha256,
+                        width = imported.width,
+                        height = imported.height,
+                        dimForLock = settingsStore.settings.first().lockDimDefault,
+                        sortIndex = 0,
+                        addedAt = System.currentTimeMillis(),
+                        framings =
+                            Background.defaultFramings().mapValues { (_, framing) ->
+                                framing.copy(rotationDegrees = imported.orientationDegrees)
+                            },
+                    )
+                val id = albumRepository.addStandaloneAsset(albumId, asset)
+                if (album.value?.isHidden == true && settingsStore.settings.first().encryptHidden) {
+                    encryptedImages.encryptAsset(id)
+                }
+                albumRepository.setFixedAsset(albumId, surface, id)
+            }
+        }
 
         fun setFixedAsset(
             surface: WallpaperSurface,
@@ -54,12 +98,35 @@ class AlbumSettingsViewModel
             viewModelScope.launch { albumRepository.setRotationOrder(albumId, order) }
         }
 
+        fun setRotationEnabled(enabled: Boolean) {
+            viewModelScope.launch { albumRepository.setRotationEnabled(albumId, enabled) }
+        }
+
+        fun setCrossfade(
+            enabled: Boolean,
+            durationMs: Int,
+        ) {
+            viewModelScope.launch { albumRepository.setCrossfade(albumId, enabled, durationMs) }
+        }
+
+        fun setSlideOptions(
+            mode: SlideMode,
+            speedPxPerSecond: Float,
+        ) {
+            viewModelScope.launch {
+                albumRepository.setSlideOptions(albumId, mode, speedPxPerSecond)
+            }
+        }
+
         fun setSchedule(
             type: ScheduleType,
-            intervalMinutes: Int?,
+            intervalSeconds: Int?,
             fixedTimes: List<LocalTime>,
         ) {
-            viewModelScope.launch { albumRepository.setSchedule(albumId, type, intervalMinutes, fixedTimes) }
+            viewModelScope.launch {
+                albumRepository.setSchedule(albumId, type, intervalSeconds, fixedTimes)
+                changeScheduler.rearm()
+            }
         }
 
         fun addFixedTime(time: LocalTime) {
@@ -98,9 +165,16 @@ class AlbumSettingsViewModel
 
         fun delete(onDeleted: () -> Unit) {
             viewModelScope.launch {
-                albumRepository.deleteAlbum(albumId)
-                onDeleted()
+                if (albumRepository.deleteAlbum(albumId)) {
+                    onDeleted()
+                } else {
+                    deleteError.value = true
+                }
             }
+        }
+
+        fun clearDeleteError() {
+            deleteError.value = false
         }
 
         private companion object {

@@ -6,7 +6,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.data.importer.ImageImporter
 import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.domain.model.Album
@@ -14,13 +13,12 @@ import dev.backgrounded.domain.model.GestureAction
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class WidgetConfigUiState(
-    val iconSource: String = "builtin:next",
+    val iconSource: String = "builtin:app",
     val iconAlpha: Int = 255,
     val backgroundAlpha: Int = 0,
     val tapAction: GestureAction = GestureAction.NEXT,
@@ -34,31 +32,35 @@ class WidgetConfigViewModel
     @Inject
     constructor(
         @ApplicationContext private val applicationContext: Context,
-        private val settingsStore: SettingsStore,
         private val albumRepository: AlbumRepository,
         private val imageImporter: ImageImporter,
+        private val widgetConfigStore: WidgetConfigStore,
     ) : ViewModel() {
         private val mutableState = MutableStateFlow(WidgetConfigUiState())
         val state: StateFlow<WidgetConfigUiState> = mutableState.asStateFlow()
 
+        private var widgetId: Int? = null
+
         init {
-            viewModelScope.launch {
-                val settings = settingsStore.settings.first()
-                mutableState.update {
-                    it.copy(
-                        iconSource = settings.widgetIconSource,
-                        iconAlpha = settings.widgetIconAlpha,
-                        backgroundAlpha = settings.widgetBackgroundAlpha,
-                        tapAction = settings.widgetTapAction,
-                        doubleTapAction = settings.widgetDoubleTapAction,
-                        pinnedAlbumId = settings.widgetPinnedAlbumId,
-                    )
-                }
-            }
             viewModelScope.launch {
                 albumRepository.observeAlbums().collect { albums ->
                     mutableState.update { it.copy(albums = albums) }
                 }
+            }
+        }
+
+        fun load(id: Int) {
+            widgetId = id
+            val config = widgetConfigStore.get(id)
+            mutableState.update {
+                it.copy(
+                    iconSource = config.iconSource,
+                    iconAlpha = config.iconAlpha,
+                    backgroundAlpha = config.backgroundAlpha,
+                    tapAction = config.tapAction,
+                    doubleTapAction = config.doubleTapAction,
+                    pinnedAlbumId = config.pinnedAlbumId,
+                )
             }
         }
 
@@ -83,14 +85,18 @@ class WidgetConfigViewModel
 
         fun save(onSaved: () -> Unit) {
             val current = mutableState.value
+            val id = widgetId ?: return
             viewModelScope.launch {
-                settingsStore.setWidgetConfig(
-                    iconSource = current.iconSource,
-                    iconAlpha = current.iconAlpha,
-                    backgroundAlpha = current.backgroundAlpha,
-                    tapAction = current.tapAction,
-                    doubleTapAction = current.doubleTapAction,
-                    pinnedAlbumId = current.pinnedAlbumId,
+                widgetConfigStore.put(
+                    id,
+                    WidgetConfig(
+                        iconSource = current.iconSource,
+                        iconAlpha = current.iconAlpha,
+                        backgroundAlpha = current.backgroundAlpha,
+                        tapAction = current.tapAction,
+                        doubleTapAction = current.doubleTapAction,
+                        pinnedAlbumId = current.pinnedAlbumId,
+                    ),
                 )
                 WallpaperWidget.updateAll(applicationContext)
                 onSaved()
