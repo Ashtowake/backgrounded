@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -9,6 +11,13 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+val releaseSigning =
+    Properties().apply {
+        val config = rootProject.file("keystore.properties")
+        if (config.isFile) config.inputStream().use { load(it) }
+    }
+val releaseKeystore = System.getenv("KEYSTORE_PATH") ?: releaseSigning.getProperty("storeFile")
+
 android {
     namespace = "dev.backgrounded"
     compileSdk = 36
@@ -17,17 +26,17 @@ android {
         applicationId = "dev.backgrounded"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 5000
+        versionName = "0.5.0"
     }
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH") ?: return@create
+            val keystorePath = releaseKeystore ?: return@create
             storeFile = file(keystorePath)
-            storePassword = System.getenv("KEYSTORE_PASSWORD")
-            keyAlias = System.getenv("KEY_ALIAS")
-            keyPassword = System.getenv("KEY_PASSWORD")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: releaseSigning.getProperty("storePassword")
+            keyAlias = System.getenv("KEY_ALIAS") ?: releaseSigning.getProperty("keyAlias")
+            keyPassword = System.getenv("KEY_PASSWORD") ?: releaseSigning.getProperty("keyPassword")
         }
     }
 
@@ -36,10 +45,10 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig =
-                if (System.getenv("KEYSTORE_PATH") != null) {
+                if (releaseKeystore != null) {
                     signingConfigs.getByName("release")
                 } else {
-                    signingConfigs.getByName("debug")
+                    null
                 }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -55,7 +64,7 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = false
+        buildConfig = true
     }
 
     packaging {
