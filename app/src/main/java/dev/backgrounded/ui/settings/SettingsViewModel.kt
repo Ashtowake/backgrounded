@@ -12,6 +12,8 @@ import dev.backgrounded.core.diagnostics.LocalDiagnostics
 import dev.backgrounded.core.security.EncryptedImageStore
 import dev.backgrounded.core.security.PinVault
 import dev.backgrounded.data.backup.BackupManager
+import dev.backgrounded.data.backup.ImageRecovery
+import dev.backgrounded.data.backup.ImageRecoveryResult
 import dev.backgrounded.data.datastore.Settings
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.data.db.BackgroundedDatabase
@@ -22,8 +24,10 @@ import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.domain.usecase.TogglePause
 import dev.backgrounded.shortcuts.ActionTrampolineActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +42,7 @@ class SettingsViewModel
         private val settingsStore: SettingsStore,
         private val togglePauseUseCase: TogglePause,
         private val backupManager: BackupManager,
+        private val imageRecovery: ImageRecovery,
         private val managedFolderStore: ManagedFolderStore,
         private val encryptedImageStore: EncryptedImageStore,
         private val pinVault: PinVault,
@@ -48,6 +53,32 @@ class SettingsViewModel
         val settings: StateFlow<Settings> =
             settingsStore.settings
                 .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), Settings.DEFAULTS)
+
+        private val mutableMissingImages = MutableStateFlow(0)
+        val missingImages = mutableMissingImages.asStateFlow()
+        private val mutableRecoveringImages = MutableStateFlow(false)
+        val recoveringImages = mutableRecoveringImages.asStateFlow()
+
+        init {
+            viewModelScope.launch { mutableMissingImages.value = imageRecovery.missingCount() }
+        }
+
+        fun restoreImages(
+            tree: Uri? = null,
+            onResult: (ImageRecoveryResult) -> Unit,
+        ) {
+            if (mutableRecoveringImages.value) return
+            mutableRecoveringImages.value = true
+            viewModelScope.launch {
+                try {
+                    val result = imageRecovery.restore(tree)
+                    mutableMissingImages.value = result.missing
+                    onResult(result)
+                } finally {
+                    mutableRecoveringImages.value = false
+                }
+            }
+        }
 
         val managedFolders: StateFlow<Set<String>> = managedFolderStore.folders
 
@@ -222,6 +253,7 @@ class SettingsViewModel
                             backupManager.importJson(text)
                         }.getOrDefault(false)
                     }
+                mutableMissingImages.value = imageRecovery.missingCount()
                 onResult(success)
             }
         }

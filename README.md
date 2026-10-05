@@ -20,6 +20,7 @@ License: GPL-3.0-or-later.
 - Optional source-file moves into private storage and encryption for hidden images.
 - Configurable widgets with separate settings and single- or double-tap actions.
 - JSON configuration import and export.
+- Restore missing images from original files by content hash, keeping pair order and image compositions.
 - Debug builds include optional local diagnostics; release builds have no diagnostics logging or network permission.
 
 # Install and updates
@@ -27,6 +28,10 @@ License: GPL-3.0-or-later.
 Download the signed APK from [Releases](https://github.com/Ashtowake/backgrounded/releases).
 For Obtainium, add `https://github.com/Ashtowake/backgrounded` as the app source.
 Updates use the same application ID and signing key, with increasing version codes.
+
+Configuration JSON exports do not contain image files. Keep the originals separately.
+After importing a configuration, grant its original folders or full access, then use
+**Settings → Restore images from folder** or **Scan granted locations** to restore missing private copies.
 
 # Planned Features
 

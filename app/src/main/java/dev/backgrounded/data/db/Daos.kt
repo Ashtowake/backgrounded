@@ -57,6 +57,9 @@ interface AlbumDao {
 
 @Dao
 interface BackgroundDao {
+    @Query("SELECT * FROM backgrounds ORDER BY albumId, sortIndex, id")
+    suspend fun listAll(): List<BackgroundEntity>
+
     @Query("SELECT * FROM backgrounds WHERE albumId = :albumId ORDER BY sortIndex, id")
     fun observeForAlbum(albumId: Long): Flow<List<BackgroundEntity>>
 

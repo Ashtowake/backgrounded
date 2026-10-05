@@ -51,6 +51,7 @@ import dev.backgrounded.BuildConfig
 import dev.backgrounded.R
 import dev.backgrounded.core.security.DeviceCredentialGate
 import dev.backgrounded.core.security.SystemAuthentication
+import dev.backgrounded.data.backup.ImageRecoveryResult
 import dev.backgrounded.domain.model.DoubleTapMode
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.ui.components.LabelValueRow
@@ -65,6 +66,8 @@ fun SettingsScreen(
 ) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val missingImages by viewModel.missingImages.collectAsStateWithLifecycle()
+    val recoveringImages by viewModel.recoveringImages.collectAsStateWithLifecycle()
     val managedFolders by viewModel.managedFolders.collectAsStateWithLifecycle()
     val unresolvedFiles by viewModel.unresolvedFiles.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -170,10 +173,30 @@ fun SettingsScreen(
                 viewModel.importFrom(it) { success ->
                     scope.launch {
                         snackbarHostState.showSnackbar(
-                            context.getString(if (success) R.string.import_finished else R.string.import_failed),
+                            if (success && viewModel.missingImages.value > 0) {
+                                "Configuration imported; ${viewModel.missingImages.value} images missing. " +
+                                    "Choose an original folder to restore them."
+                            } else {
+                                context.getString(if (success) R.string.import_finished else R.string.import_failed)
+                            },
                         )
                     }
                 }
+            }
+        }
+
+    val reportRecovery: (ImageRecoveryResult) -> Unit = { result ->
+        scope.launch {
+            snackbarHostState.showSnackbar("${result.restored} images restored; ${result.missing} still missing")
+        }
+    }
+    val restoreFolderLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                viewModel.restoreImages(uri, reportRecovery)
             }
         }
 
@@ -290,6 +313,24 @@ fun SettingsScreen(
                 Button(onClick = { importLauncher.launch(arrayOf("application/json")) }) {
                     Text(stringResource(R.string.import_config))
                 }
+            }
+
+            Text("Configuration exports contain editing settings and file references, not image files.")
+            Text("Keep a separate copy of the originals before uninstalling or changing devices.")
+            if (missingImages > 0) {
+                Text("$missingImages images are missing. Restore originals by matching their content hashes.")
+                if (settings.encryptHidden) Text("Unhide encrypted albums before restoring missing images.")
+                Button(
+                    enabled = !recoveringImages,
+                    onClick = { restoreFolderLauncher.launch(null) },
+                ) { Text("Restore images from folder") }
+                if (fullAccessGranted || managedFolders.isNotEmpty()) {
+                    TextButton(
+                        enabled = !recoveringImages,
+                        onClick = { viewModel.restoreImages(onResult = reportRecovery) },
+                    ) { Text("Scan granted locations") }
+                }
+                if (recoveringImages) Text("Matching original images...")
             }
 
             SectionTitle("Hidden album access")

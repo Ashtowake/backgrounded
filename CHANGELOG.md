@@ -1,3 +1,11 @@
+# v0.5.1
+
+- Recover missing images from configuration imports by matching SHA-256 hashes against originals.
+- Scan granted locations or choose an original folder, including its subfolders.
+- Preserve image pairs, ordering, and all editing compositions during recovery.
+- Report missing images and clarify that configuration exports do not include image files.
+- Roll back database changes if importing a malformed configuration fails.
+
 # v0.5.0
 
 - Separate front/inner and home/lock image compositions, mirroring, and editing controls.

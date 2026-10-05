@@ -1,6 +1,7 @@
 package dev.backgrounded.data.backup
 
 import android.content.Context
+import androidx.room.withTransaction
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.data.db.AlbumEntity
@@ -164,6 +165,7 @@ class BackupManager
         @ApplicationContext private val context: Context,
         private val database: BackgroundedDatabase,
         private val settingsStore: SettingsStore,
+        private val imageRecovery: ImageRecovery,
     ) {
         private val json =
             Json {
@@ -208,86 +210,94 @@ class BackupManager
         suspend fun importJson(text: String): Boolean =
             runCatching {
                 val backup = json.decodeFromString<BackupFile>(text)
-                database.albumDao().clear()
-                database.pairDao().clear()
-                database.backgroundDao().clear()
-                database.framingDao().clear()
-                database.historyDao().clear()
                 val importedAlbumIds = mutableListOf<Long>()
-                backup.albums.forEachIndexed { albumIndex, albumBackup ->
-                    val albumId =
-                        database.albumDao().insert(
-                            AlbumEntity(
-                                name = albumBackup.name,
-                                coverPairId = null,
-                                fixedHomeAssetId = null,
-                                fixedLockAssetId = null,
-                                isHidden = albumBackup.hidden,
-                                rotationOrder = albumBackup.rotationOrder,
-                                scheduleType = albumBackup.scheduleType,
-                                intervalMinutes = albumBackup.intervalMinutes,
-                                intervalSeconds = albumBackup.intervalSeconds ?: albumBackup.intervalMinutes?.times(60),
-                                slideMode = albumBackup.slideMode,
-                                slideSpeedPxPerSecond = albumBackup.slideSpeedPxPerSecond,
-                                crossfadeEnabled =
-                                    albumBackup.crossfadeEnabled
-                                        ?: backup.settings?.crossfadeEnabled ?: true,
-                                crossfadeDurationMs = albumBackup.crossfadeDurationMs.coerceIn(100, 3000),
-                                rotationEnabled = albumBackup.rotationEnabled,
-                                fixedTimesCsv = albumBackup.fixedTimes.joinToString(separator = ","),
-                                unlockEnabled = albumBackup.unlockEnabled,
-                                unlockMinMinutes = albumBackup.unlockMinMinutes,
-                                unlockEveryN = albumBackup.unlockEveryN,
-                                unlockMaxPerDay = albumBackup.unlockMaxPerDay,
-                                lastAppliedPairId = null,
-                                lastChangedAt = 0L,
-                                shuffleRemainingCsv = null,
-                                sortIndex = albumIndex,
-                            ),
-                        )
-                    importedAlbumIds += albumId
-
-                    val images = albumBackup.images.ifEmpty { albumBackup.backgrounds }
-                    val imageIds =
-                        images.mapIndexed { index, image ->
-                            val id = database.backgroundDao().insert(image.toEntity(albumId, index))
-                            database.framingDao().upsertAll(image.toFramings(id))
-                            id
-                        }
-                    val pairBackups = albumBackup.pairs.ifEmpty { images.indices.map { PairBackup(it, it) } }
-                    val pairIds =
-                        pairBackups.mapIndexed { index, pair ->
-                            database.pairDao().insert(
-                                BackgroundPairEntity(
-                                    albumId = albumId,
-                                    homeBackgroundId = imageIds[pair.homeIndex],
-                                    lockBackgroundId = imageIds[pair.lockIndex],
-                                    sortIndex = index,
-                                    addedAt = System.currentTimeMillis(),
+                database.withTransaction {
+                    database.albumDao().clear()
+                    database.pairDao().clear()
+                    database.backgroundDao().clear()
+                    database.framingDao().clear()
+                    database.historyDao().clear()
+                    backup.albums.forEachIndexed { albumIndex, albumBackup ->
+                        val albumId =
+                            database.albumDao().insert(
+                                AlbumEntity(
+                                    name = albumBackup.name,
+                                    coverPairId = null,
+                                    fixedHomeAssetId = null,
+                                    fixedLockAssetId = null,
+                                    isHidden = albumBackup.hidden,
+                                    rotationOrder = albumBackup.rotationOrder,
+                                    scheduleType = albumBackup.scheduleType,
+                                    intervalMinutes = albumBackup.intervalMinutes,
+                                    intervalSeconds =
+                                        albumBackup.intervalSeconds ?: albumBackup.intervalMinutes?.times(60),
+                                    slideMode = albumBackup.slideMode,
+                                    slideSpeedPxPerSecond = albumBackup.slideSpeedPxPerSecond,
+                                    crossfadeEnabled =
+                                        albumBackup.crossfadeEnabled
+                                            ?: backup.settings?.crossfadeEnabled ?: true,
+                                    crossfadeDurationMs = albumBackup.crossfadeDurationMs.coerceIn(100, 3000),
+                                    rotationEnabled = albumBackup.rotationEnabled,
+                                    fixedTimesCsv = albumBackup.fixedTimes.joinToString(separator = ","),
+                                    unlockEnabled = albumBackup.unlockEnabled,
+                                    unlockMinMinutes = albumBackup.unlockMinMinutes,
+                                    unlockEveryN = albumBackup.unlockEveryN,
+                                    unlockMaxPerDay = albumBackup.unlockMaxPerDay,
+                                    lastAppliedPairId = null,
+                                    lastChangedAt = 0L,
+                                    shuffleRemainingCsv = null,
+                                    sortIndex = albumIndex,
                                 ),
                             )
-                        }
-                    val cover = (albumBackup.coverPairIndex ?: albumBackup.coverIndex)?.let { pairIds.getOrNull(it) }
-                    val last =
-                        (albumBackup.lastAppliedPairIndex ?: albumBackup.lastAppliedIndex)
-                            ?.let { pairIds.getOrNull(it) }
-                    val shuffle =
-                        albumBackup.shufflePairs.ifEmpty { albumBackup.shuffleRemaining }
-                            .mapNotNull { pairIds.getOrNull(it) }
-                    val current = database.albumDao().get(albumId) ?: return@forEachIndexed
-                    database.albumDao().update(
-                        current.copy(
-                            coverPairId = cover ?: current.coverPairId,
-                            lastAppliedPairId = last ?: current.lastAppliedPairId,
-                            shuffleRemainingCsv = shuffle.joinToString(separator = ","),
-                            fixedHomeAssetId =
-                                albumBackup.fixedHomeIndex?.let { imageIds.getOrNull(it) }
-                                    ?: current.fixedHomeAssetId,
-                            fixedLockAssetId =
-                                albumBackup.fixedLockIndex?.let { imageIds.getOrNull(it) }
-                                    ?: current.fixedLockAssetId,
-                        ),
-                    )
+                        importedAlbumIds += albumId
+
+                        val images = albumBackup.images.ifEmpty { albumBackup.backgrounds }
+                        val imageIds =
+                            images.mapIndexed { index, image ->
+                                val id = database.backgroundDao().insert(image.toEntity(albumId, index))
+                                database.framingDao().upsertAll(image.toFramings(id))
+                                id
+                            }
+                        val pairBackups = albumBackup.pairs.ifEmpty { images.indices.map { PairBackup(it, it) } }
+                        val pairIds =
+                            pairBackups.mapIndexed { index, pair ->
+                                database.pairDao().insert(
+                                    BackgroundPairEntity(
+                                        albumId = albumId,
+                                        homeBackgroundId = imageIds[pair.homeIndex],
+                                        lockBackgroundId = imageIds[pair.lockIndex],
+                                        sortIndex = index,
+                                        addedAt = System.currentTimeMillis(),
+                                    ),
+                                )
+                            }
+                        val cover =
+                            (albumBackup.coverPairIndex ?: albumBackup.coverIndex)?.let {
+                                pairIds.getOrNull(
+                                    it,
+                                )
+                            }
+                        val last =
+                            (albumBackup.lastAppliedPairIndex ?: albumBackup.lastAppliedIndex)
+                                ?.let { pairIds.getOrNull(it) }
+                        val shuffle =
+                            albumBackup.shufflePairs.ifEmpty { albumBackup.shuffleRemaining }
+                                .mapNotNull { pairIds.getOrNull(it) }
+                        val current = database.albumDao().get(albumId) ?: return@forEachIndexed
+                        database.albumDao().update(
+                            current.copy(
+                                coverPairId = cover ?: current.coverPairId,
+                                lastAppliedPairId = last ?: current.lastAppliedPairId,
+                                shuffleRemainingCsv = shuffle.joinToString(separator = ","),
+                                fixedHomeAssetId =
+                                    albumBackup.fixedHomeIndex?.let { imageIds.getOrNull(it) }
+                                        ?: current.fixedHomeAssetId,
+                                fixedLockAssetId =
+                                    albumBackup.fixedLockIndex?.let { imageIds.getOrNull(it) }
+                                        ?: current.fixedLockAssetId,
+                            ),
+                        )
+                    }
                 }
                 backup.settings?.let { settings ->
                     settingsStore.setRotationPaused(settings.rotationPaused)
@@ -309,6 +319,7 @@ class BackupManager
                     settingsStore.setActiveAlbum(settings.activeAlbumIndex?.let { importedAlbumIds.getOrNull(it) })
                     settingsStore.setCurrent(null, 0L)
                 }
+                imageRecovery.restore()
                 true
             }.getOrDefault(false)
 
