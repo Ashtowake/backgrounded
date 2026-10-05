@@ -6,6 +6,7 @@ import dev.backgrounded.data.repository.HistoryRepository
 import dev.backgrounded.domain.model.CurrentWallpaper
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.state.WallpaperBus
+import dev.backgrounded.schedule.ChangeScheduler
 import dev.backgrounded.widget.WidgetUpdater
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,6 +20,7 @@ class ApplyPair
         private val settingsStore: SettingsStore,
         private val wallpaperBus: WallpaperBus,
         private val widgetUpdater: WidgetUpdater,
+        private val changeScheduler: ChangeScheduler,
     ) {
         suspend operator fun invoke(
             pairId: Long,
@@ -31,6 +33,7 @@ class ApplyPair
             settingsStore.setCurrent(pair.id, now)
             historyRepository.record(pair.id, pair.albumId, now, trigger)
             wallpaperBus.set(CurrentWallpaper(pair.id, pair.albumId, now))
+            changeScheduler.rearm()
             widgetUpdater.refreshAll()
             return true
         }

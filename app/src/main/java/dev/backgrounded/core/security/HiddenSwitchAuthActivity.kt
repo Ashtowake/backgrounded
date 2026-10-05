@@ -26,6 +26,7 @@ import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.domain.model.Trigger
+import dev.backgrounded.domain.rotation.AlbumSwitchMode
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.NextAlbum
@@ -33,7 +34,15 @@ import dev.backgrounded.ui.theme.BackgroundedTheme
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-enum class HiddenSwitchOperation { NEXT_ALBUM, APPLY_NEXT, APPLY_PREVIOUS, SELECT }
+enum class HiddenSwitchOperation {
+    NEXT_ALBUM,
+    PREVIOUS_ALBUM,
+    RANDOM_ALBUM,
+    APPLY_NEXT,
+    APPLY_PREVIOUS,
+    SELECT,
+    REVEAL,
+}
 
 /** Authenticates a widget, shortcut, or wallpaper gesture without opening the main app. */
 @AndroidEntryPoint
@@ -107,7 +116,12 @@ class HiddenSwitchAuthActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 when (operation) {
+                    HiddenSwitchOperation.REVEAL -> setResult(RESULT_OK)
                     HiddenSwitchOperation.NEXT_ALBUM -> nextAlbum(trigger, authenticated = true)
+                    HiddenSwitchOperation.PREVIOUS_ALBUM ->
+                        nextAlbum(trigger, authenticated = true, mode = AlbumSwitchMode.PREVIOUS)
+                    HiddenSwitchOperation.RANDOM_ALBUM ->
+                        nextAlbum(trigger, authenticated = true, mode = AlbumSwitchMode.RANDOM)
                     HiddenSwitchOperation.APPLY_NEXT -> {
                         if (albumId != null) applyNextBackground(trigger, albumIdOverride = albumId)
                     }
@@ -219,6 +233,6 @@ class HiddenSwitchAuthActivity : ComponentActivity() {
                 .putExtra(EXTRA_ALBUM_ID, albumId ?: -1L)
                 .putExtra(EXTRA_TRIGGER, trigger.name)
                 .putExtra(EXTRA_OPERATION, operation.name)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .addFlags(if (operation == HiddenSwitchOperation.REVEAL) 0 else Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 }

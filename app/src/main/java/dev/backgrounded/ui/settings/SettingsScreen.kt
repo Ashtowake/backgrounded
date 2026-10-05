@@ -51,6 +51,7 @@ import dev.backgrounded.BuildConfig
 import dev.backgrounded.R
 import dev.backgrounded.core.security.DeviceCredentialGate
 import dev.backgrounded.core.security.SystemAuthentication
+import dev.backgrounded.core.wallpaper.LiveWallpaperController
 import dev.backgrounded.data.backup.ImageRecoveryResult
 import dev.backgrounded.domain.model.DoubleTapMode
 import dev.backgrounded.domain.model.GestureAction
@@ -236,6 +237,10 @@ fun SettingsScreen(
                     .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            TextButton(onClick = { context.startActivity(LiveWallpaperController.applyIntent(context)) }) {
+                Text(stringResource(R.string.set_live_wallpaper))
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(checked = settings.rotationPaused, onCheckedChange = { viewModel.togglePause() })
                 Text(

@@ -29,6 +29,11 @@ class SettingsStore
     ) {
         val settings: Flow<Settings> = context.settingsDataStore.data.map { prefs -> prefs.toSettings() }
 
+        val wallpaperSetupCompleted: Flow<Boolean> =
+            context.settingsDataStore.data.map { it[Keys.WALLPAPER_SETUP_COMPLETED] ?: false }
+
+        suspend fun completeWallpaperSetup() = edit { it[Keys.WALLPAPER_SETUP_COMPLETED] = true }
+
         suspend fun setActiveAlbum(albumId: Long?) =
             edit { prefs ->
                 prefs[Keys.ACTIVE_ALBUM] = albumId ?: Keys.UNSET
@@ -185,6 +190,7 @@ class SettingsStore
             val WIDGET_TAP_ACTION = stringPreferencesKey("widget_tap_action")
             val WIDGET_DOUBLE_TAP_ACTION = stringPreferencesKey("widget_double_tap_action")
             val WIDGET_PINNED_ALBUM = longPreferencesKey("widget_pinned_album")
+            val WALLPAPER_SETUP_COMPLETED = booleanPreferencesKey("wallpaper_setup_completed")
             val LIVE_WALLPAPER_HOME = booleanPreferencesKey("live_wallpaper_home")
             val LIVE_WALLPAPER_LOCK = booleanPreferencesKey("live_wallpaper_lock")
             val NEXT_TRIGGER_AT = longPreferencesKey("next_trigger_at")

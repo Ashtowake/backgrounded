@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +62,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -85,6 +87,8 @@ import kotlin.math.roundToInt
 fun EditorScreen(onBack: () -> Unit) {
     val viewModel: EditorViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val configuration = LocalConfiguration.current
+    LaunchedEffect(configuration.orientation) { viewModel.refreshDisplayTargets() }
     val pair = state.pair ?: return
     val expandedKey = state.expandedKey
     val keys = orderedKeys(state)
@@ -106,20 +110,29 @@ fun EditorScreen(onBack: () -> Unit) {
                 )
             },
         ) { padding ->
-            HorizontalPager(
-                state = pagerState,
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-            ) { page ->
-                val key = keys[page]
-                PreviewPage(
-                    state = state,
-                    key = key,
-                    onSelect = viewModel::expand,
-                    onSizeChanged = viewModel::setViewport,
-                )
+            BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+                if (maxWidth >= 840.dp) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        keys.forEach { key ->
+                            PreviewPage(
+                                state = state,
+                                key = key,
+                                onSelect = viewModel::expand,
+                                onSizeChanged = viewModel::setViewport,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                } else {
+                    HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                        PreviewPage(
+                            state = state,
+                            key = keys[page],
+                            onSelect = viewModel::expand,
+                            onSizeChanged = viewModel::setViewport,
+                        )
+                    }
+                }
             }
         }
         return
@@ -171,11 +184,12 @@ private fun PreviewPage(
     key: FramingKey,
     onSelect: (FramingKey) -> Unit,
     onSizeChanged: (width: Int, height: Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val aspect = aspectOf(state, key.display)
     Column(
         modifier =
-            Modifier
+            modifier
                 .fillMaxSize()
                 .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -38,6 +38,10 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Backgrounded.Auth" />
 
+        <activity android:name=".widget.GalleryPickerActivity"
+            android:exported="false" android:excludeFromRecents="true"
+            android:taskAffinity="" android:theme="@style/Theme.Backgrounded.Auth" />
+
         <service
             android:name=".wallpaper.BackgroundedWallpaperService"
             android:exported="true"
@@ -74,6 +78,12 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
+        </receiver>
+
+        <receiver android:name=".widget.PlaybackWidget" android:exported="true"
+            android:label="@string/playback_widget_label">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/playback_widget_info" />
         </receiver>
 
         <receiver

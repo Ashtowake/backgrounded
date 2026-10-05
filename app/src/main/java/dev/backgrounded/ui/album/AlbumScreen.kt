@@ -1,6 +1,7 @@
 package dev.backgrounded.ui.album
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -9,14 +10,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,7 +38,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -58,14 +57,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -78,7 +74,6 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.backgrounded.R
 import dev.backgrounded.data.importer.SafFolders
-import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.BackgroundPair
 import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.WallpaperSurface
@@ -101,8 +96,8 @@ fun AlbumScreen(
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
 
-    @Suppress("UNUSED_VARIABLE")
     val configuration = LocalConfiguration.current
+    val stackPreviews = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val displayTarget = viewModel.currentDisplay()
     val displayAspect = viewModel.displayAspect(displayTarget)
     val thumbnailVersion by viewModel.thumbnailVersion.collectAsStateWithLifecycle()
@@ -202,6 +197,20 @@ fun AlbumScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            viewModel.loadPairSources()
+                            showExistingPairs = true
+                        },
+                        modifier = Modifier.semantics { contentDescription = "Add existing pair" },
+                    ) { PairIcon() }
+                    IconButton(
+                        onClick = { showFolderChoices = true },
+                        modifier = Modifier.semantics { contentDescription = "Import or link folder" },
+                    ) { FolderIcon() }
+                    IconButton(onClick = {
+                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) { Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.add_images)) }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.album_settings))
                     }
@@ -209,32 +218,6 @@ fun AlbumScreen(
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FloatingActionButton(
-                    onClick = {
-                        viewModel.loadPairSources()
-                        showExistingPairs = true
-                    },
-                    modifier = Modifier.semantics { contentDescription = "Add existing pair" },
-                ) { PairPlusIcon() }
-                FloatingActionButton(
-                    onClick = { showFolderChoices = true },
-                    modifier = Modifier.semantics { contentDescription = "Import or link folder" },
-                ) {
-                    FolderPlusIcon()
-                }
-                FloatingActionButton(
-                    onClick = {
-                        imagePicker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    },
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.add_images))
-                }
-            }
-        },
     ) { padding ->
         if (pairs.isEmpty()) {
             Column(
@@ -248,93 +231,97 @@ fun AlbumScreen(
                 Text(text = stringResource(R.string.no_images))
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(GRID_COLUMNS),
-                state = gridState,
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                itemsIndexed(displayedPairs, key = { _, pair -> pair.id }) { index, pair ->
-                    PairCell(
-                        pair = pair,
-                        number = index + 1,
-                        dragging = draggingId == pair.id,
-                        dragOffset = if (draggingId == pair.id) dragOffset else Offset.Zero,
-                        modifier = Modifier.animateItem(),
-                        onDragStart = {
-                            draggingId = pair.id
-                            dragOffset = Offset.Zero
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        },
-                        onDrag = { delta ->
-                            dragOffset += delta
-                            val current = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == draggingId }
-                            if (current != null) {
-                                val center =
-                                    Offset(
-                                        current.offset.x + current.size.width / 2f + dragOffset.x,
-                                        current.offset.y + current.size.height / 2f + dragOffset.y,
-                                    )
-                                val target =
-                                    gridState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
-                                        val inColumn =
-                                            center.x >= item.offset.x &&
-                                                center.x <= item.offset.x + item.size.width
-                                        val inRow =
-                                            center.y >= item.offset.y &&
-                                                center.y <= item.offset.y + item.size.height
-                                        inColumn && inRow
-                                    }?.key as? Long
-                                if (target != null && target != pair.id) {
-                                    val targetItem =
-                                        gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == target }
-                                    val from = orderedIds.indexOf(pair.id)
-                                    val to = orderedIds.indexOf(target)
-                                    if (from >= 0 && to >= 0 && targetItem != null) {
-                                        dragOffset -=
-                                            Offset(
-                                                (targetItem.offset.x - current.offset.x).toFloat(),
-                                                (targetItem.offset.y - current.offset.y).toFloat(),
-                                            )
-                                        orderedIds = orderedIds.toMutableList().apply { add(to, removeAt(from)) }
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+                val columns = if (maxWidth < 600.dp) GridCells.Fixed(2) else GridCells.Adaptive(240.dp)
+                LazyVerticalGrid(
+                    columns = columns,
+                    contentPadding = PaddingValues(bottom = 16.dp),
+                    state = gridState,
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    itemsIndexed(displayedPairs, key = { _, pair -> pair.id }) { index, pair ->
+                        PairCell(
+                            pair = pair,
+                            number = index + 1,
+                            dragging = draggingId == pair.id,
+                            dragOffset = if (draggingId == pair.id) dragOffset else Offset.Zero,
+                            modifier = Modifier.animateItem(),
+                            onDragStart = {
+                                draggingId = pair.id
+                                dragOffset = Offset.Zero
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDrag = { delta ->
+                                dragOffset += delta
+                                val current = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == draggingId }
+                                if (current != null) {
+                                    val center =
+                                        Offset(
+                                            current.offset.x + current.size.width / 2f + dragOffset.x,
+                                            current.offset.y + current.size.height / 2f + dragOffset.y,
+                                        )
+                                    val target =
+                                        gridState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                            val inColumn =
+                                                center.x >= item.offset.x &&
+                                                    center.x <= item.offset.x + item.size.width
+                                            val inRow =
+                                                center.y >= item.offset.y &&
+                                                    center.y <= item.offset.y + item.size.height
+                                            inColumn && inRow
+                                        }?.key as? Long
+                                    if (target != null && target != pair.id) {
+                                        val targetItem =
+                                            gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == target }
+                                        val from = orderedIds.indexOf(pair.id)
+                                        val to = orderedIds.indexOf(target)
+                                        if (from >= 0 && to >= 0 && targetItem != null) {
+                                            dragOffset -=
+                                                Offset(
+                                                    (targetItem.offset.x - current.offset.x).toFloat(),
+                                                    (targetItem.offset.y - current.offset.y).toFloat(),
+                                                )
+                                            orderedIds = orderedIds.toMutableList().apply { add(to, removeAt(from)) }
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        }
+                                    }
+                                    val viewportHeight = gridState.layoutInfo.viewportEndOffset
+                                    if (center.y > viewportHeight - DRAG_EDGE_PX) {
+                                        dragScope.launch { gridState.scrollBy(DRAG_SCROLL_PX) }
+                                    } else if (center.y < DRAG_EDGE_PX) {
+                                        dragScope.launch { gridState.scrollBy(-DRAG_SCROLL_PX) }
                                     }
                                 }
-                                val viewportHeight = gridState.layoutInfo.viewportEndOffset
-                                if (center.y > viewportHeight - DRAG_EDGE_PX) {
-                                    dragScope.launch { gridState.scrollBy(DRAG_SCROLL_PX) }
-                                } else if (center.y < DRAG_EDGE_PX) {
-                                    dragScope.launch { gridState.scrollBy(-DRAG_SCROLL_PX) }
-                                }
-                            }
-                        },
-                        onDragEnd = {
-                            viewModel.reorder(orderedIds)
-                            draggingId = null
-                            dragOffset = Offset.Zero
-                        },
-                        onDragCancel = {
-                            draggingId = null
-                            dragOffset = Offset.Zero
-                            orderedIds = pairs.map { it.id }
-                        },
-                        displayTarget = displayTarget,
-                        displayAspect = displayAspect,
-                        thumbnailVersion = thumbnailVersion,
-                        viewModel = viewModel,
-                        isCover = pair.id == album?.coverPairId,
-                        onOpen = { onEditPair(pair.id) },
-                        onApply = { viewModel.applyNow(pair.id) },
-                        onSetCover = { viewModel.setCover(pair.id) },
-                        onSetHomeImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.HOME) },
-                        onSetLockImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.LOCK) },
-                        onDelete = { viewModel.deletePair(pair.id) },
-                    )
+                            },
+                            onDragEnd = {
+                                viewModel.reorder(orderedIds)
+                                draggingId = null
+                                dragOffset = Offset.Zero
+                            },
+                            onDragCancel = {
+                                draggingId = null
+                                dragOffset = Offset.Zero
+                                orderedIds = pairs.map { it.id }
+                            },
+                            displayTarget = displayTarget,
+                            displayAspect = displayAspect,
+                            stackPreviews = stackPreviews,
+                            thumbnailVersion = thumbnailVersion,
+                            viewModel = viewModel,
+                            isCover = pair.id == album?.coverPairId,
+                            onOpen = { onEditPair(pair.id) },
+                            onApply = { viewModel.applyNow(pair.id) },
+                            onSetCover = { viewModel.setCover(pair.id) },
+                            onSetHomeImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.HOME) },
+                            onSetLockImage = { slotRequest = SlotRequest(pair.id, WallpaperSurface.LOCK) },
+                            onDelete = { viewModel.deletePair(pair.id) },
+                        )
+                    }
                 }
             }
         }
@@ -382,33 +369,15 @@ fun AlbumScreen(
                             viewModel.addExistingPair(source.pair)
                         }) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(modifier = Modifier.size(width = 38.dp, height = 56.dp)) {
-                                    SlotThumbnail(
-                                        background = source.pair.lock,
-                                        surface = WallpaperSurface.LOCK,
-                                        displayTarget = displayTarget,
-                                        displayAspect = displayAspect,
-                                        thumbnailVersion = thumbnailVersion,
-                                        viewModel = viewModel,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                }
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .padding(start = 2.dp)
-                                            .size(width = 38.dp, height = 56.dp),
-                                ) {
-                                    SlotThumbnail(
-                                        background = source.pair.home,
-                                        surface = WallpaperSurface.HOME,
-                                        displayTarget = displayTarget,
-                                        displayAspect = displayAspect,
-                                        thumbnailVersion = thumbnailVersion,
-                                        viewModel = viewModel,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                }
+                                PairThumbnails(
+                                    pair = source.pair,
+                                    displayTarget = displayTarget,
+                                    displayAspect = displayAspect,
+                                    stackPreviews = stackPreviews,
+                                    thumbnailVersion = thumbnailVersion,
+                                    previewImage = viewModel::preview,
+                                    modifier = Modifier.width(76.dp),
+                                )
                                 Text(
                                     "${source.albumName} · ${source.pair.home.displayName}",
                                     modifier = Modifier.padding(start = 8.dp),
@@ -465,8 +434,8 @@ fun AlbumScreen(
 private enum class FolderAction { IMPORT, LINK, MOVE }
 
 @Composable
-private fun PairPlusIcon() {
-    val color = MaterialTheme.colorScheme.onPrimaryContainer
+private fun PairIcon() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier = Modifier.size(24.dp)) {
         drawRect(
             color,
@@ -480,24 +449,12 @@ private fun PairPlusIcon() {
             size = androidx.compose.ui.geometry.Size(size.width * 0.6f, size.height * 0.6f),
             style = Stroke(width = size.width * 0.07f),
         )
-        drawLine(
-            color,
-            Offset(size.width * 0.68f, size.height * 0.76f),
-            Offset(size.width * 0.94f, size.height * 0.76f),
-            strokeWidth = size.width * 0.08f,
-        )
-        drawLine(
-            color,
-            Offset(size.width * 0.81f, size.height * 0.63f),
-            Offset(size.width * 0.81f, size.height * 0.89f),
-            strokeWidth = size.width * 0.08f,
-        )
     }
 }
 
 @Composable
-private fun FolderPlusIcon() {
-    val color = MaterialTheme.colorScheme.onPrimaryContainer
+private fun FolderIcon() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier = Modifier.size(24.dp)) {
         val path =
             Path().apply {
@@ -510,20 +467,6 @@ private fun FolderPlusIcon() {
                 close()
             }
         drawPath(path, color, style = Stroke(width = size.width * 0.07f))
-        val plusX = size.width * 0.79f
-        val plusY = size.height * 0.74f
-        drawLine(
-            color,
-            androidx.compose.ui.geometry.Offset(plusX - size.width * 0.12f, plusY),
-            androidx.compose.ui.geometry.Offset(plusX + size.width * 0.12f, plusY),
-            strokeWidth = size.width * 0.07f,
-        )
-        drawLine(
-            color,
-            androidx.compose.ui.geometry.Offset(plusX, plusY - size.height * 0.12f),
-            androidx.compose.ui.geometry.Offset(plusX, plusY + size.height * 0.12f),
-            strokeWidth = size.width * 0.07f,
-        )
     }
 }
 
@@ -540,6 +483,7 @@ private fun PairCell(
     onDragCancel: () -> Unit,
     displayTarget: DisplayTarget,
     displayAspect: Float,
+    stackPreviews: Boolean,
     thumbnailVersion: Int,
     viewModel: AlbumViewModel,
     isCover: Boolean,
@@ -580,133 +524,63 @@ private fun PairCell(
                     )
                 },
     ) {
-        Column {
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                SlotThumbnail(
-                    background = pair.lock,
-                    surface = WallpaperSurface.LOCK,
-                    displayTarget = displayTarget,
-                    displayAspect = displayAspect,
-                    thumbnailVersion = thumbnailVersion,
-                    viewModel = viewModel,
-                    modifier = Modifier.weight(1f),
-                )
-                SlotThumbnail(
-                    background = pair.home,
-                    surface = WallpaperSurface.HOME,
-                    displayTarget = displayTarget,
-                    displayAspect = displayAspect,
-                    thumbnailVersion = thumbnailVersion,
-                    viewModel = viewModel,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "$number. ${pair.home.displayName}",
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (isCover) {
-                    Text(
-                        text = stringResource(R.string.cover_label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.more))
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.change_now)) },
-                        onClick = {
-                            menuOpen = false
-                            onApply()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.set_home_image)) },
-                        onClick = {
-                            menuOpen = false
-                            onSetHomeImage()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.set_lock_image)) },
-                        onClick = {
-                            menuOpen = false
-                            onSetLockImage()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.set_cover)) },
-                        onClick = {
-                            menuOpen = false
-                            onSetCover()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.delete)) },
-                        onClick = {
-                            menuOpen = false
-                            onDelete()
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SlotThumbnail(
-    background: Background,
-    surface: WallpaperSurface,
-    displayTarget: DisplayTarget,
-    displayAspect: Float,
-    thumbnailVersion: Int,
-    viewModel: AlbumViewModel,
-    modifier: Modifier = Modifier,
-) {
-    val framing = background.framingFor(displayTarget, surface)
-    val preview =
-        remember(
-            background.id,
-            background.storageRef,
-            framing,
-            background.dimForLock,
-            surface,
-            displayTarget,
-            displayAspect,
-            thumbnailVersion,
+        WallpaperPairContent(
+            pair = pair,
+            number = number,
+            displayTarget = displayTarget,
+            displayAspect = displayAspect,
+            stackPreviews = stackPreviews,
+            thumbnailVersion = thumbnailVersion,
+            previewImage = viewModel::preview,
         ) {
-            viewModel.preview(background, surface, displayTarget, displayAspect)
+            if (isCover) {
+                Text(
+                    text = stringResource(R.string.cover_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.more))
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.change_now)) },
+                    onClick = {
+                        menuOpen = false
+                        onApply()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.set_home_image)) },
+                    onClick = {
+                        menuOpen = false
+                        onSetHomeImage()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.set_lock_image)) },
+                    onClick = {
+                        menuOpen = false
+                        onSetLockImage()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.set_cover)) },
+                    onClick = {
+                        menuOpen = false
+                        onSetCover()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.delete)) },
+                    onClick = {
+                        menuOpen = false
+                        onDelete()
+                    },
+                )
+            }
         }
-    Box(modifier = modifier.aspectRatio(displayAspect)) {
-        if (preview != null) {
-            Image(
-                bitmap = preview.asImageBitmap(),
-                contentDescription = background.displayName,
-                contentScale = ContentScale.FillBounds,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        Text(
-            text =
-                stringResource(
-                    if (surface == WallpaperSurface.HOME) R.string.surface_home else R.string.surface_lock,
-                ),
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White,
-            modifier =
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(4.dp),
-        )
     }
 }
 
@@ -715,7 +589,6 @@ private data class SlotRequest(
     val surface: WallpaperSurface,
 )
 
-private const val GRID_COLUMNS = 2
 private const val MAX_PICK_COUNT = 50
 private const val DRAG_EDGE_PX = 120f
 private const val DRAG_SCROLL_PX = 35f

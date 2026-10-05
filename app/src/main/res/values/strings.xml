@@ -170,4 +170,6 @@
     <string name="import_finished">Import finished</string>
     <string name="import_failed">Import failed</string>
     <string name="export_finished">Export finished</string>
+    <string name="playback_widget_label">Wallpaper controls</string>
+    <string name="playback_widget_description">Previous, next, random images and albums, and pause controls.</string>
 </resources>

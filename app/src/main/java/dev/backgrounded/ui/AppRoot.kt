@@ -1,11 +1,17 @@
 package dev.backgrounded.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import dev.backgrounded.core.wallpaper.LiveWallpaperController
 import dev.backgrounded.ui.album.AlbumScreen
 import dev.backgrounded.ui.albums.AlbumsScreen
 import dev.backgrounded.ui.albumsettings.AlbumSettingsScreen
@@ -18,9 +24,27 @@ import dev.backgrounded.ui.nav.EditorRoute
 import dev.backgrounded.ui.nav.HistoryRoute
 import dev.backgrounded.ui.nav.SettingsRoute
 import dev.backgrounded.ui.settings.SettingsScreen
+import dev.backgrounded.ui.setup.WallpaperSetupScreen
+import dev.backgrounded.ui.setup.WallpaperSetupViewModel
 
 @Composable
 fun AppRoot(modifier: Modifier = Modifier) {
+    val setup: WallpaperSetupViewModel = hiltViewModel()
+    val ready by setup.ready.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LifecycleResumeEffect(Unit) {
+        setup.refresh()
+        onPauseOrDispose { }
+    }
+    if (ready != true) {
+        if (ready == false) {
+            WallpaperSetupScreen(
+                onApply = { context.startActivity(LiveWallpaperController.applyIntent(context)) },
+                modifier = modifier,
+            )
+        }
+        return
+    }
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = AlbumsRoute, modifier = modifier) {
         composable<AlbumsRoute> {
@@ -45,6 +69,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
         composable<AlbumSettingsRoute> {
             AlbumSettingsScreen(
                 onBack = { navController.popBackStack() },
+                onDeleted = { navController.popBackStack<AlbumsRoute>(inclusive = false) },
             )
         }
         composable<SettingsRoute> {

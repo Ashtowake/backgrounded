@@ -13,5 +13,6 @@ class WidgetUpdater
     ) {
         fun refreshAll() {
             WallpaperWidget.updateAll(context)
+            PlaybackWidget.updateAll(context)
         }
     }

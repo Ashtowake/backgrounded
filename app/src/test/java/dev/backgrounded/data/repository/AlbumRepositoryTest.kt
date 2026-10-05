@@ -10,10 +10,13 @@ import dev.backgrounded.domain.model.FitMode
 import dev.backgrounded.domain.model.FramingKey
 import dev.backgrounded.domain.model.SourceType
 import dev.backgrounded.domain.model.WallpaperSurface
+import dev.backgrounded.ui.albums.AlbumsUiState
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -21,6 +24,33 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class AlbumRepositoryTest {
+    @Test
+    fun `deleting active album requests replacement and selecting another resolves it`() =
+        runBlocking {
+            val context: Context = RuntimeEnvironment.getApplication()
+            val database =
+                Room.inMemoryDatabaseBuilder(context, BackgroundedDatabase::class.java)
+                    .allowMainThreadQueries().build()
+            try {
+                val repository = AlbumRepository(database, ImageStore(context))
+                val active = repository.createAlbum("Active")
+                val other = repository.createAlbum("Other")
+                val replacement = repository.createAlbum("Replacement")
+                assertTrue(repository.deleteAlbum(other))
+                val before = AlbumsUiState(repository.observeAlbums().first(), activeAlbumId = active)
+                assertFalse(before.needsActiveSelection)
+
+                assertTrue(repository.deleteAlbum(active))
+                val after = AlbumsUiState(repository.observeAlbums().first(), activeAlbumId = active)
+                assertTrue(after.needsActiveSelection)
+                assertEquals(listOf(replacement), after.visibleAlbums.map { it.id })
+                assertFalse(after.copy(activeAlbumId = replacement).needsActiveSelection)
+                assertFalse(after.copy(activeAlbumId = null).needsActiveSelection)
+            } finally {
+                database.close()
+            }
+        }
+
     @Test
     fun `crossfade settings are independent for each album`() =
         runBlocking {

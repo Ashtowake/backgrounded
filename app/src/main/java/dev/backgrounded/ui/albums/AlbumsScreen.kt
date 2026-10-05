@@ -4,34 +4,46 @@ import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,8 +54,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -51,11 +68,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.backgrounded.R
 import dev.backgrounded.core.security.DeviceCredentialGate
 import dev.backgrounded.core.security.SystemAuthentication
-import dev.backgrounded.core.wallpaper.LiveWallpaperController
 import dev.backgrounded.domain.model.Album
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.Trigger
+import dev.backgrounded.domain.rotation.AlbumSwitchMode
 import dev.backgrounded.ui.components.BackgroundThumbnail
+import dev.backgrounded.widget.PlaybackAction
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +86,11 @@ fun AlbumsScreen(
     val albumPreviews by viewModel.albumPreviews.collectAsStateWithLifecycle()
     val operationError by viewModel.operationError.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val cardHeight = 180.dp
+    var selectionDismissed by remember(state.activeAlbumId) { mutableStateOf(false) }
+    var pendingRename by remember { mutableStateOf<Album?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var pendingDelete by remember { mutableStateOf<Album?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
     var pendingHide by remember { mutableStateOf<Long?>(null) }
@@ -89,7 +112,7 @@ fun AlbumsScreen(
                 viewModel.setHidden(action.albumId, true, action.sourceFolder, action.useFullAccess)
             is CredentialAction.Move ->
                 viewModel.moveSources(action.albumId, action.sourceFolder, action.useFullAccess)
-            is CredentialAction.NextAlbum -> viewModel.advanceAlbumAuthorized(action.trigger)
+            is CredentialAction.SwitchAlbum -> viewModel.advanceAlbumAuthorized(action.trigger, action.mode)
             is CredentialAction.SelectAlbum -> viewModel.setActive(action.albumId, authenticated = true)
         }
     }
@@ -183,77 +206,157 @@ fun AlbumsScreen(
             }
         },
     ) { padding ->
-        LazyColumn(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                LiveWallpaperCard(
-                    onApply = {
-                        context.startActivity(LiveWallpaperController.applyIntent(context))
-                    },
-                )
-            }
-            item {
-                ActiveAlbumCard(
-                    album =
-                        state.visibleAlbums.firstOrNull { it.id == state.activeAlbumId }
-                            ?: state.hiddenAlbums.firstOrNull { it.id == state.activeAlbumId && state.hiddenRevealed },
-                    concealed = state.hiddenAlbums.any { it.id == state.activeAlbumId } && !state.hiddenRevealed,
-                    paused = state.paused,
-                    onPrevious = viewModel::previous,
-                    onNext = viewModel::next,
-                    onNextAlbum = {
-                        viewModel.advanceAlbum {
-                            runWithCredential(CredentialAction.NextAlbum(Trigger.MANUAL))
-                        }
-                    },
-                    onTogglePause = viewModel::togglePause,
-                )
-            }
-            if (state.visibleAlbums.isEmpty() && state.hiddenAlbums.isEmpty()) {
-                item {
-                    Text(
-                        text = stringResource(R.string.no_albums),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(vertical = 24.dp),
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(320.dp),
+                contentPadding = PaddingValues(bottom = 100.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    ActiveAlbumCard(
+                        album =
+                            state.visibleAlbums.firstOrNull { it.id == state.activeAlbumId }
+                                ?: state.hiddenAlbums.firstOrNull { it.id == state.activeAlbumId },
+                        paused = state.paused,
+                        onPrevious = viewModel::previous,
+                        onNext = viewModel::next,
+                        onAlbumSwitch = { mode ->
+                            viewModel.advanceAlbum(mode) {
+                                runWithCredential(CredentialAction.SwitchAlbum(mode))
+                            }
+                        },
+                        onRandomImage = viewModel::randomImage,
+                        onTogglePause = viewModel::togglePause,
+                        modifier = Modifier.height(cardHeight),
                     )
                 }
-            }
-            items(state.visibleAlbums, key = { it.id }) { album ->
-                AlbumRow(
-                    album = album,
-                    previews = albumPreviews[album.id].orEmpty(),
-                    active = album.id == state.activeAlbumId,
-                    onOpen = { onOpenAlbum(album.id) },
-                    onSetActive = { viewModel.setActive(album.id) },
-                    onHide = { pendingHide = album.id },
-                )
-            }
-            if (state.hiddenRevealed) {
-                items(state.hiddenAlbums, key = { it.id }) { album ->
+                if (state.visibleAlbums.isEmpty() && state.hiddenAlbums.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            text = stringResource(R.string.no_albums),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(vertical = 24.dp),
+                        )
+                    }
+                }
+                items(state.visibleAlbums, key = { it.id }) { album ->
                     AlbumRow(
                         album = album,
                         previews = albumPreviews[album.id].orEmpty(),
+                        modifier = Modifier.height(cardHeight),
                         active = album.id == state.activeAlbumId,
                         onOpen = { onOpenAlbum(album.id) },
-                        onSetActive = {
-                            if (state.authenticateHiddenSwitch) {
+                        onSetActive = { viewModel.setActive(album.id) },
+                        onHide = { pendingHide = album.id },
+                        onRename = {
+                            pendingRename = album
+                            renameText = album.name
+                        },
+                        onDelete = { pendingDelete = album },
+                    )
+                }
+                if (state.hiddenRevealed) {
+                    items(state.hiddenAlbums, key = { it.id }) { album ->
+                        AlbumRow(
+                            album = album,
+                            previews = albumPreviews[album.id].orEmpty(),
+                            modifier = Modifier.height(cardHeight),
+                            active = album.id == state.activeAlbumId,
+                            onOpen = { onOpenAlbum(album.id) },
+                            onSetActive = {
+                                if (state.authenticateHiddenSwitch && !state.hiddenRevealed) {
+                                    runWithCredential(CredentialAction.SelectAlbum(album.id))
+                                } else {
+                                    viewModel.setActive(album.id)
+                                }
+                            },
+                            onHide = { viewModel.setHidden(album.id, false) },
+                            onRename = {
+                                pendingRename = album
+                                renameText = album.name
+                            },
+                            onDelete = { pendingDelete = album },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (state.needsActiveSelection && !selectionDismissed) {
+        AlertDialog(
+            onDismissRequest = { selectionDismissed = true },
+            title = { Text("Select new active album") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    val available = state.visibleAlbums + if (state.hiddenRevealed) state.hiddenAlbums else emptyList()
+                    if (available.isEmpty()) Text("No available albums")
+                    available.forEach { album ->
+                        TextButton(onClick = {
+                            if (album.isHidden && state.authenticateHiddenSwitch && !state.hiddenRevealed) {
                                 runWithCredential(CredentialAction.SelectAlbum(album.id))
                             } else {
                                 viewModel.setActive(album.id)
                             }
-                        },
-                        onHide = { viewModel.setHidden(album.id, false) },
-                        onMoveSources = if (state.hideSourcesSystemwide) ({ pendingMove = album.id }) else null,
-                    )
+                        }) { Text(album.name) }
+                    }
                 }
-            }
-        }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCreateDialog = true }) { Text(stringResource(R.string.new_album)) }
+            },
+            dismissButton = {
+                Row {
+                    if (state.hiddenAlbums.isNotEmpty() && !state.hiddenRevealed) {
+                        TextButton(onClick = { runWithCredential(CredentialAction.Reveal) }) { Text("Authenticate") }
+                    }
+                    TextButton(onClick = { selectionDismissed = true }) { Text("Later") }
+                }
+            },
+        )
+    }
+    pendingRename?.let { album ->
+        AlertDialog(
+            onDismissRequest = { pendingRename = null },
+            title = { Text("Rename album") },
+            text = {
+                OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.rename(album.id, renameText)
+                    pendingRename = null
+                }) {
+                    Text(stringResource(R.string.save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRename = null }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
+    pendingDelete?.let { album ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(stringResource(R.string.delete_album)) },
+            text = { Text(stringResource(R.string.delete_album_message)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.delete(album.id)
+                    pendingDelete = null
+                }) {
+                    Text(stringResource(R.string.delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
     }
 
     if (showCreateDialog) {
@@ -456,46 +559,53 @@ fun AlbumsScreen(
 }
 
 @Composable
-private fun LiveWallpaperCard(onApply: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text = stringResource(R.string.live_wallpaper), style = MaterialTheme.typography.titleMedium)
-            Button(onClick = onApply) {
-                Text(stringResource(R.string.set_live_wallpaper))
-            }
-            Text(
-                text = stringResource(R.string.picker_steps),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
 private fun ActiveAlbumCard(
     album: Album?,
-    concealed: Boolean,
     paused: Boolean,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
-    onNextAlbum: () -> Unit,
+    onAlbumSwitch: (AlbumSwitchMode) -> Unit,
+    onRandomImage: () -> Unit,
     onTogglePause: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Card(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(
-                text =
-                    stringResource(R.string.active_album) + ": " +
-                        if (concealed) stringResource(R.string.hidden_albums) else (album?.name ?: "—"),
+                text = album?.name ?: "No active album",
                 style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 16.dp),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onPrevious) { Text(stringResource(R.string.previous)) }
-                TextButton(onClick = onNext) { Text(stringResource(R.string.next)) }
-                TextButton(onClick = onNextAlbum) { Text(stringResource(R.string.action_next_album)) }
-                TextButton(onClick = onTogglePause) {
-                    Text(stringResource(if (paused) R.string.resume else R.string.pause))
+            Row(
+                modifier = Modifier.widthIn(max = 448.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                PlaybackAction.entries.forEach { action ->
+                    FilledTonalIconButton(
+                        onClick = {
+                            when (action) {
+                                PlaybackAction.PREVIOUS_IMAGE -> onPrevious()
+                                PlaybackAction.NEXT_IMAGE -> onNext()
+                                PlaybackAction.RANDOM_IMAGE -> onRandomImage()
+                                PlaybackAction.TOGGLE_PAUSE -> onTogglePause()
+                                PlaybackAction.PREVIOUS_ALBUM -> onAlbumSwitch(AlbumSwitchMode.PREVIOUS)
+                                PlaybackAction.NEXT_ALBUM -> onAlbumSwitch(AlbumSwitchMode.NEXT)
+                                PlaybackAction.RANDOM_ALBUM -> onAlbumSwitch(AlbumSwitchMode.RANDOM)
+                            }
+                        },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(action.icon(paused)),
+                            contentDescription = action.label(paused),
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
                 }
             }
         }
@@ -510,58 +620,99 @@ private fun AlbumRow(
     onOpen: () -> Unit,
     onSetActive: () -> Unit,
     onHide: () -> Unit,
-    onMoveSources: (() -> Unit)? = null,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    Card(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = album.name, style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    previews.forEach { image ->
-                        BackgroundThumbnail(image, modifier = Modifier.width(36.dp).height(48.dp))
-                    }
-                }
+    Card(
+        onClick = onOpen,
+        modifier = modifier.fillMaxWidth(),
+        border =
+            BorderStroke(
+                1.dp,
                 if (active) {
-                    Text(
-                        text = stringResource(R.string.active_album),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                },
+            ),
+    ) {
+        Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = album.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (active) "Active" else "",
+                    modifier = Modifier.width(48.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                )
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.width(48.dp).height(56.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Switch(
+                        checked = active,
+                        onCheckedChange = { if (!active) onSetActive() },
+                        modifier =
+                            Modifier.graphicsLayer { rotationZ = -90f }
+                                .semantics { contentDescription = "Activate ${album.name}" },
                     )
                 }
-            }
-            IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.more))
-            }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.active_album)) },
-                    onClick = {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.more))
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Rename") }, onClick = {
                         menuOpen = false
-                        onSetActive()
-                    },
-                )
-                if (onMoveSources != null) {
+                        onRename()
+                    })
                     DropdownMenuItem(
-                        text = { Text("Move original photos") },
+                        text = { Text(stringResource(if (album.isHidden) R.string.unhide else R.string.hide)) },
                         onClick = {
                             menuOpen = false
-                            onMoveSources()
+                            onHide()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.delete)) },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
                         },
                     )
                 }
-                DropdownMenuItem(
-                    text = {
-                        Text(stringResource(if (album.isHidden) R.string.unhide else R.string.hide))
-                    },
-                    onClick = {
-                        menuOpen = false
-                        onHide()
-                    },
-                )
+            }
+            AlbumThumbnailStrip(previews, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun AlbumThumbnailStrip(
+    previews: List<Background>,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val thumbnailHeight = maxHeight
+        val preferredWidth = thumbnailHeight * 0.75f
+        val capacity = ((maxWidth + 4.dp) / (preferredWidth + 4.dp)).toInt().coerceAtLeast(1)
+        val thumbnailWidth =
+            if (previews.size >= capacity) {
+                (maxWidth - 4.dp * (capacity - 1)) / capacity
+            } else {
+                minOf(preferredWidth, maxWidth)
+            }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            previews.take(capacity).forEach { image ->
+                BackgroundThumbnail(image, modifier = Modifier.width(thumbnailWidth).height(thumbnailHeight))
             }
         }
     }
@@ -574,7 +725,7 @@ private sealed interface CredentialAction {
 
     data class Move(val albumId: Long, val sourceFolder: Uri?, val useFullAccess: Boolean = false) : CredentialAction
 
-    data class NextAlbum(val trigger: Trigger) : CredentialAction
+    data class SwitchAlbum(val mode: AlbumSwitchMode, val trigger: Trigger = Trigger.MANUAL) : CredentialAction
 
     data class SelectAlbum(val albumId: Long) : CredentialAction
 }

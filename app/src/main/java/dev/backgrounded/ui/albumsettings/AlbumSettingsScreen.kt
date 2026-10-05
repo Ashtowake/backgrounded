@@ -56,7 +56,10 @@ import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AlbumSettingsScreen(onBack: () -> Unit) {
+fun AlbumSettingsScreen(
+    onBack: () -> Unit,
+    onDeleted: () -> Unit,
+) {
     val viewModel: AlbumSettingsViewModel = hiltViewModel()
     val album by viewModel.album.collectAsStateWithLifecycle()
     val assets by viewModel.assets.collectAsStateWithLifecycle()
@@ -341,7 +344,7 @@ fun AlbumSettingsScreen(onBack: () -> Unit) {
                 TextButton(
                     onClick = {
                         showDeleteDialog = false
-                        viewModel.delete(onBack)
+                        viewModel.delete(onDeleted)
                     },
                 ) {
                     Text(stringResource(R.string.delete))

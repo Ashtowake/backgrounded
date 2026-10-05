@@ -13,11 +13,13 @@ import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.domain.model.Album
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.Trigger
+import dev.backgrounded.domain.rotation.AlbumSwitchMode
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.NextAlbum
 import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
+import dev.backgrounded.widget.WidgetUpdater
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -39,7 +41,10 @@ data class AlbumsUiState(
     val encryptHidden: Boolean = false,
     val hideSourcesSystemwide: Boolean = false,
     val authenticateHiddenSwitch: Boolean = true,
-)
+) {
+    val needsActiveSelection: Boolean
+        get() = activeAlbumId != null && (visibleAlbums + hiddenAlbums).none { it.id == activeAlbumId }
+}
 
 @HiltViewModel
 @Suppress("LongParameterList")
@@ -55,6 +60,7 @@ class AlbumsViewModel
         private val pinVault: PinVault,
         private val encryptedImageStore: EncryptedImageStore,
         private val sourceMover: ManagedSourceMover,
+        private val widgetUpdater: WidgetUpdater,
     ) : ViewModel() {
         private val hiddenRevealed = MutableStateFlow(false)
         val operationError = MutableStateFlow<String?>(null)
@@ -72,7 +78,7 @@ class AlbumsViewModel
                         settings.activeAlbumId
                             ?: albums.firstOrNull { !it.isHidden }?.id,
                     paused = settings.rotationPaused,
-                    hiddenRevealed = revealed,
+                    hiddenRevealed = revealed || albums.any { it.id == settings.activeAlbumId && it.isHidden },
                     encryptHidden = settings.encryptHidden,
                     hideSourcesSystemwide = settings.hideSourcesSystemwide,
                     authenticateHiddenSwitch = settings.authenticateHiddenSwitch,
@@ -95,7 +101,7 @@ class AlbumsViewModel
                     } else {
                         combine(albums.map { albumRepository.observePairs(it.id) }) { lists ->
                             albums.mapIndexed { index, album ->
-                                album.id to lists[index].take(PREVIEW_COUNT).map { it.home }
+                                album.id to lists[index].map { it.home }
                             }.toMap()
                         }
                     }
@@ -105,6 +111,26 @@ class AlbumsViewModel
             viewModelScope.launch {
                 val id = albumRepository.createAlbum(name.trim().ifEmpty { "Album" })
                 settingsStore.setActiveAlbum(id)
+                widgetUpdater.refreshAll()
+            }
+        }
+
+        fun rename(
+            albumId: Long,
+            name: String,
+        ) {
+            viewModelScope.launch {
+                albumRepository.renameAlbum(albumId, name.trim().ifEmpty { "Album" })
+                widgetUpdater.refreshAll()
+            }
+        }
+
+        fun delete(albumId: Long) {
+            viewModelScope.launch {
+                if (!albumRepository.deleteAlbum(albumId)) {
+                    operationError.value = "Restore moved originals before deleting this album"
+                }
+                widgetUpdater.refreshAll()
             }
         }
 
@@ -114,10 +140,13 @@ class AlbumsViewModel
         ) {
             viewModelScope.launch {
                 val album = albumRepository.getAlbum(albumId) ?: return@launch
-                if (album.isHidden && settingsStore.settings.first().authenticateHiddenSwitch && !authenticated) {
+                if (album.isHidden && settingsStore.settings.first().authenticateHiddenSwitch &&
+                    !authenticated && !state.value.hiddenRevealed
+                ) {
                     return@launch
                 }
                 settingsStore.setActiveAlbum(albumId)
+                widgetUpdater.refreshAll()
             }
         }
 
@@ -228,15 +257,24 @@ class AlbumsViewModel
 
         fun previous() = viewModelScope.launch { applyPreviousBackground(Trigger.MANUAL) }
 
+        fun randomImage() = viewModelScope.launch { applyNextBackground(Trigger.MANUAL, randomize = true) }
+
         fun advanceAlbum(
+            mode: AlbumSwitchMode = AlbumSwitchMode.NEXT,
             trigger: Trigger = Trigger.MANUAL,
             onAuthenticationRequired: () -> Unit,
         ) = viewModelScope.launch {
-            if (nextAlbum(trigger) == NextAlbumResult.AUTH_REQUIRED) onAuthenticationRequired()
+            if (nextAlbum(trigger, authenticated = state.value.hiddenRevealed, mode = mode) ==
+                NextAlbumResult.AUTH_REQUIRED
+            ) {
+                onAuthenticationRequired()
+            }
         }
 
-        fun advanceAlbumAuthorized(trigger: Trigger) =
-            viewModelScope.launch { nextAlbum(trigger, authenticated = true) }
+        fun advanceAlbumAuthorized(
+            trigger: Trigger,
+            mode: AlbumSwitchMode,
+        ) = viewModelScope.launch { nextAlbum(trigger, authenticated = true, mode = mode) }
 
         fun togglePause() = viewModelScope.launch { togglePauseUseCase() }
 
@@ -245,7 +283,7 @@ class AlbumsViewModel
         }
 
         fun concealHidden() {
-            hiddenRevealed.value = false
+            if (state.value.hiddenAlbums.none { it.id == state.value.activeAlbumId }) hiddenRevealed.value = false
         }
 
         fun clearError() {
@@ -273,6 +311,5 @@ class AlbumsViewModel
 
         private companion object {
             const val STOP_TIMEOUT_MILLIS = 5_000L
-            const val PREVIEW_COUNT = 4
         }
     }

@@ -3,6 +3,7 @@ package dev.backgrounded.core.display
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.view.Display
+import android.view.Surface
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.backgrounded.domain.model.DisplayTarget
 import javax.inject.Inject
@@ -38,7 +39,10 @@ class DisplayRepository
 
         fun targets(): List<DisplayTargetInfo> {
             refreshFromEnabledDisplays()
-            val sizes = knownPanels.values.distinct()
+            val panels = knownPanels.values.distinct()
+            val rotation = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation
+            val rotated = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
+            val sizes = if (panels.size == 1 && rotated) panels.map { it.second to it.first } else panels
             if (sizes.isEmpty()) return listOf(DisplayTargetInfo(DisplayTarget.INNER, 0, 0))
             val inner =
                 sizes.filter { aspectOf(it) >= FOLD_ASPECT_THRESHOLD }

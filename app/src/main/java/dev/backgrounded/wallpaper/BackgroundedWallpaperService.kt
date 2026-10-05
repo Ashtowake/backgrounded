@@ -342,6 +342,7 @@ class BackgroundedWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
             super.onSurfaceCreated(holder)
+            if (!isPreview) applicationScope.launch { settingsStore.completeWallpaperSetup() }
             loadIfNeeded()
         }
 

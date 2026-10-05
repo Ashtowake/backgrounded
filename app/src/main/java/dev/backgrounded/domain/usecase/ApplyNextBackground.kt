@@ -8,6 +8,7 @@ import dev.backgrounded.data.importer.LinkedFolderScanner
 import dev.backgrounded.data.repository.AlbumRepository
 import dev.backgrounded.data.repository.HistoryRepository
 import dev.backgrounded.domain.model.CurrentWallpaper
+import dev.backgrounded.domain.model.RotationOrder
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.render.BitmapLoader
 import dev.backgrounded.domain.rotation.RotationEngine
@@ -44,6 +45,7 @@ class ApplyNextBackground
             trigger: Trigger,
             albumIdOverride: Long? = null,
             expectedScheduleAt: Long? = null,
+            randomize: Boolean = false,
         ): Boolean =
             mutex.withLock {
                 val startedAt = android.os.SystemClock.elapsedRealtime()
@@ -70,8 +72,8 @@ class ApplyNextBackground
                     RotationEngine.next(
                         currentId = currentId,
                         orderedIds = ids,
-                        order = album.rotationOrder,
-                        shuffleRemaining = album.shuffleRemaining,
+                        order = if (randomize) RotationOrder.SHUFFLE else album.rotationOrder,
+                        shuffleRemaining = if (randomize) emptyList() else album.shuffleRemaining,
                     ) ?: return@withLock false
                 val selectedPair = pairs.first { it.id == firstSelection.backgroundId }
                 val selection =
@@ -87,8 +89,8 @@ class ApplyNextBackground
                         RotationEngine.next(
                             currentId = availableCurrent,
                             orderedIds = availableIds,
-                            order = album.rotationOrder,
-                            shuffleRemaining = album.shuffleRemaining,
+                            order = if (randomize) RotationOrder.SHUFFLE else album.rotationOrder,
+                            shuffleRemaining = if (randomize) emptyList() else album.shuffleRemaining,
                         ) ?: return@withLock false
                     }
                 val now = System.currentTimeMillis()

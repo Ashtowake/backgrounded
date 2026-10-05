@@ -13,6 +13,7 @@ import dev.backgrounded.core.security.HiddenSwitchOperation
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.domain.model.Trigger
+import dev.backgrounded.domain.rotation.AlbumSwitchMode
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.HiddenAlbumSwitchPolicy
@@ -56,6 +57,10 @@ class WidgetActionReceiver : BroadcastReceiver() {
         context: Context,
         intent: Intent,
     ) {
+        if (intent.action == ACTION_CONTROL) {
+            receiveControl(context, intent)
+            return
+        }
         if (intent.action != ACTION_TAP) return
         val widgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
         if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return
@@ -88,6 +93,53 @@ class WidgetActionReceiver : BroadcastReceiver() {
                 }
             } finally {
                 pendingResult.finish()
+            }
+        }
+    }
+
+    private fun receiveControl(
+        context: Context,
+        intent: Intent,
+    ) {
+        val actionName = intent.getStringExtra(EXTRA_CONTROL)
+        val action = PlaybackAction.entries.firstOrNull { it.name == actionName } ?: return
+        val pending = goAsync()
+        applicationScope.launch {
+            try {
+                dispatchControl(context, action)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    private suspend fun dispatchControl(
+        context: Context,
+        action: PlaybackAction,
+    ) {
+        when (action) {
+            PlaybackAction.PREVIOUS_IMAGE -> applyPreviousBackground(Trigger.WIDGET)
+            PlaybackAction.NEXT_IMAGE -> applyNextBackground(Trigger.WIDGET)
+            PlaybackAction.RANDOM_IMAGE -> applyNextBackground(Trigger.WIDGET, randomize = true)
+            PlaybackAction.TOGGLE_PAUSE -> togglePause()
+            PlaybackAction.PREVIOUS_ALBUM, PlaybackAction.NEXT_ALBUM, PlaybackAction.RANDOM_ALBUM -> {
+                val mode =
+                    when (action) {
+                        PlaybackAction.PREVIOUS_ALBUM -> AlbumSwitchMode.PREVIOUS
+                        PlaybackAction.RANDOM_ALBUM -> AlbumSwitchMode.RANDOM
+                        else -> AlbumSwitchMode.NEXT
+                    }
+                if (nextAlbum(Trigger.WIDGET, mode = mode) == NextAlbumResult.AUTH_REQUIRED) {
+                    val operation =
+                        when (mode) {
+                            AlbumSwitchMode.PREVIOUS -> HiddenSwitchOperation.PREVIOUS_ALBUM
+                            AlbumSwitchMode.RANDOM -> HiddenSwitchOperation.RANDOM_ALBUM
+                            AlbumSwitchMode.NEXT -> HiddenSwitchOperation.NEXT_ALBUM
+                        }
+                    context.startActivity(
+                        HiddenSwitchAuthActivity.intent(context, Trigger.WIDGET, operation = operation),
+                    )
+                }
             }
         }
     }
@@ -165,6 +217,8 @@ class WidgetActionReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        const val ACTION_CONTROL = "dev.backgrounded.action.WIDGET_CONTROL"
+        const val EXTRA_CONTROL = "control"
         const val ACTION_TAP = "dev.backgrounded.action.WIDGET_TAP"
         const val DOUBLE_TAP_WINDOW_MILLIS = 550L
         private const val PREFERENCES = "widget_actions"

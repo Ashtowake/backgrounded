@@ -20,6 +20,7 @@ import dev.backgrounded.domain.model.UnlockPolicy
 import dev.backgrounded.domain.model.WallpaperSurface
 import dev.backgrounded.schedule.ChangeScheduler
 import dev.backgrounded.ui.nav.AlbumSettingsRoute
+import dev.backgrounded.widget.WidgetUpdater
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +40,7 @@ class AlbumSettingsViewModel
         private val settingsStore: SettingsStore,
         private val encryptedImages: EncryptedImageStore,
         private val changeScheduler: ChangeScheduler,
+        private val widgetUpdater: WidgetUpdater,
     ) : ViewModel() {
         private val albumId: Long = savedStateHandle.toRoute<AlbumSettingsRoute>().albumId
         val deleteError = MutableStateFlow(false)
@@ -91,7 +93,10 @@ class AlbumSettingsViewModel
         }
 
         fun rename(name: String) {
-            viewModelScope.launch { albumRepository.renameAlbum(albumId, name.trim().ifEmpty { "Album" }) }
+            viewModelScope.launch {
+                albumRepository.renameAlbum(albumId, name.trim().ifEmpty { "Album" })
+                widgetUpdater.refreshAll()
+            }
         }
 
         fun setOrder(order: RotationOrder) {
@@ -166,6 +171,7 @@ class AlbumSettingsViewModel
         fun delete(onDeleted: () -> Unit) {
             viewModelScope.launch {
                 if (albumRepository.deleteAlbum(albumId)) {
+                    widgetUpdater.refreshAll()
                     onDeleted()
                 } else {
                     deleteError.value = true

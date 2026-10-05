@@ -83,6 +83,13 @@ class EditorViewModel
             }
         }
 
+        fun refreshDisplayTargets() {
+            val targets = displayRepository.targets()
+            if (mutableState.value.targets == targets) return
+            mutableState.update { it.copy(targets = targets) }
+            renderRequests.trySend(Unit)
+        }
+
         fun setViewport(
             widthPx: Int,
             heightPx: Int,
