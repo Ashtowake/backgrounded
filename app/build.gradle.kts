@@ -26,8 +26,8 @@ android {
         applicationId = "dev.backgrounded"
         minSdk = 31
         targetSdk = 36
-        versionCode = 5001
-        versionName = "0.5.1"
+        versionCode = 5002
+        versionName = "0.5.2"
     }
 
     signingConfigs {

@@ -49,11 +49,15 @@ jobs:
           apk=app/build/outputs/apk/release/app-release.apk
           build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
           "$build_tools/apksigner" verify --verbose "$apk"
+          signer=$("$build_tools/apksigner" verify --print-certs "$apk" | sed -n 's/Signer #1 certificate SHA-256 digest: //p')
+          test "$signer" = "a9b051fb76244dd050e873eb5f45230aaaab74b5a482454b1c8667df2ddf1284"
           "$build_tools/aapt" dump badging "$apk" | sed -n '1p'
           if "$build_tools/aapt" dump permissions "$apk" | grep -q android.permission.INTERNET; then
             exit 1
           fi
           cp "$apk" "backgrounded-${GITHUB_REF_NAME}.apk"
+          sha256sum "backgrounded-${GITHUB_REF_NAME}.apk" > "backgrounded-${GITHUB_REF_NAME}.apk.sha256"
+          awk 'NR > 1 && /^# v/ { exit } { print }' CHANGELOG.md > release-notes.md
       - name: Remove temporary signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks"
@@ -62,6 +66,7 @@ jobs:
         with:
           files: |
             backgrounded-${{ github.ref_name }}.apk
+            backgrounded-${{ github.ref_name }}.apk.sha256
           name: Backgrounded ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body_path: release-notes.md
           make_latest: true
