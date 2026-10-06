@@ -31,7 +31,7 @@ data class Settings(
     val debugDiagnostics: Boolean,
     val pendingUnlock: Boolean = false,
     val animationFps: Int = 30,
-    val folderScanSeconds: Int = 60,
+    val folderScanSeconds: Int = 900,
 ) {
     companion object {
         val DEFAULTS =

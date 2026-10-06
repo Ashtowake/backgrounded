@@ -142,7 +142,7 @@ data class SettingsBackup(
     val activeAlbumIndex: Int? = null,
     val rotationPaused: Boolean = false,
     val animationFps: Int = 30,
-    val folderScanSeconds: Int = 60,
+    val folderScanSeconds: Int = 900,
     val authenticateHiddenSwitch: Boolean = true,
     val doubleTapEnabled: Boolean = true,
     val doubleTapMode: String = DoubleTapMode.BACKGROUND.name,

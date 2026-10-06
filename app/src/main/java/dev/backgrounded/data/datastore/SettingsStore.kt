@@ -231,7 +231,7 @@ class SettingsStore
                 debugDiagnostics = this[Keys.DEBUG_DIAGNOSTICS] ?: false,
                 pendingUnlock = this[Keys.PENDING_UNLOCK] ?: false,
                 animationFps = if (this[Keys.ANIMATION_FPS] == 60) 60 else 30,
-                folderScanSeconds = this[Keys.FOLDER_SCAN_SECONDS]?.takeIf { it in listOf(0, 60, 300, 900) } ?: 60,
+                folderScanSeconds = this[Keys.FOLDER_SCAN_SECONDS]?.takeIf { it in listOf(0, 60, 300, 900) } ?: 900,
             )
 
         private object Keys {

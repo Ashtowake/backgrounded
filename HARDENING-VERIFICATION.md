@@ -5,9 +5,17 @@
 Latest completed run: 122 unit tests, 12 primary native checks and one revoked-access native check;
 ktlint, detekt, debug/release lint and signed release assembly passed.
 
-Signed candidate SHA-256: `34addf31f32ca86e8672567da8e410a3050c5a11c4e006801061c1839ac27b61`.
-The final candidate is installed on both the Pixel and tablet, preserving production data.
-Both report version code 5003 and version name 0.5.3; no app or Room crash was found after launch.
+Signed candidate SHA-256: `c7148bf39e4a0fc82d0b06a7fbeab703f16735963dad59ee951dc455f525e3a0`.
+The follow-up candidate is installed on the tablet, preserving production data; no app or Room crash
+was found after launch. The Pixel retains the preceding candidate
+(`34addf31f32ca86e8672567da8e410a3050c5a11c4e006801061c1839ac27b61`).
+Both candidates use version code 5003 and version name 0.5.3.
+
+The follow-up changes use a 15-minute scan default when no preference is saved, retain saved scan choices,
+check cancellation before rotation and between preparation stages, and remove only the outer canvas clear.
+The per-layer black fill remains inside crossfade compositing. All 122 unit tests, ktlint, detekt,
+debug/release lint, signing, permission and release-diagnostics checks passed again.
+Pixel validation of this follow-up and visual Fit/background crossfade checks remain for release preparation.
 
 Run from the project root, with Gradle's user home on D:
 
@@ -86,7 +94,9 @@ diagnostics/test receivers, and the instrumentation interface must be absent fro
 
 The observations above verify idle work suppression, frame ceilings, migration, and recoverable files.
 Matched CPU/power profiling of static, slide, parallax, blur/crossfade, linked-folder, and encrypted workloads
-on both devices remains necessary before making a quantified battery-saving claim. The devices' existing
+on both devices would strengthen a quantified battery-saving claim. The agreed scope is now full Pixel
+profiling with shorter tablet regression checks; profiling no longer blocks release preparation.
+The devices' existing
 brightness and panel conditions differed, so the samples are not a controlled power comparison.
 
 No 0.5.3 GitHub release has been published by this hardening run.

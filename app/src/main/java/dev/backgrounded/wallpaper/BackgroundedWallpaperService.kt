@@ -59,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -644,9 +645,12 @@ class BackgroundedWallpaperService : WallpaperService() {
                         }
                         finishFade()
                         var backdrop: Bitmap? = null
-                        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Default) {
+                        withContext(Dispatchers.Default) {
+                            ensureActive()
                             rotated = backgroundRenderer.rotated(requireNotNull(source), framing.rotationDegrees)
+                            ensureActive()
                             backdrop = backgroundRenderer.prepareBackdrop(requireNotNull(rotated), framing)
+                            ensureActive()
                         }
                         if (rotated !== source) {
                             source?.recycle()
@@ -788,7 +792,6 @@ class BackgroundedWallpaperService : WallpaperService() {
             lastGyroKeyY = gyroKeyY
             diagnostics.count(settingsCache.debugDiagnostics, "wallpaper_drawn")
             try {
-                canvas.drawColor(Color.BLACK)
                 val previous = previousLayer
                 if (previous != null && fade < 1f) {
                     drawLayer(canvas, previous, 1f, motionFor(previous, now))

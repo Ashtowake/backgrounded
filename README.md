@@ -48,6 +48,8 @@ Static wallpapers do not schedule continuous frames or wakeup alarms.
 
 Settings provides a 30 FPS animation ceiling by default, with an optional 60 FPS ceiling,
 and an app-wide linked-folder scan interval (every rotation, 1 minute, 5 minutes, or 15 minutes).
+Folder scans default to 15 minutes when no preference is saved; saved choices are preserved.
+Supported provider notifications trigger discovery without waiting for that interval.
 Shorter intervals increase battery consumption.
 
 Configuration imports are limited to 32 MiB and validated before replacement. Restore moved originals
