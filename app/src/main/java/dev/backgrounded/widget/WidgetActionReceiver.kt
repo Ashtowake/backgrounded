@@ -14,11 +14,11 @@ import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.domain.model.GestureAction
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.rotation.AlbumSwitchMode
+import dev.backgrounded.domain.rotation.RotationResult
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.HiddenAlbumSwitchPolicy
 import dev.backgrounded.domain.usecase.NextAlbum
-import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -71,28 +71,22 @@ class WidgetActionReceiver : BroadcastReceiver() {
         if (lastTap != 0L && now >= lastTap && now - lastTap <= DOUBLE_TAP_WINDOW_MILLIS) {
             preferences.edit().putLong(tapKey, 0L).apply()
             val pendingResult = goAsync()
+            pendingResult.finish()
             applicationScope.launch {
-                try {
-                    val config = widgetConfigStore.get(widgetId, settingsStore.settings.first())
-                    dispatch(context, config.doubleTapAction, config.pinnedAlbumId)
-                } finally {
-                    pendingResult.finish()
-                }
+                val config = widgetConfigStore.get(widgetId, settingsStore.settings.first())
+                dispatch(context, config.doubleTapAction, config.pinnedAlbumId)
             }
             return
         }
         preferences.edit().putLong(tapKey, now).apply()
         val pendingResult = goAsync()
+        pendingResult.finish()
         applicationScope.launch {
-            try {
-                delay(DOUBLE_TAP_WINDOW_MILLIS)
-                if (preferences.getLong(tapKey, 0L) == now) {
-                    preferences.edit().putLong(tapKey, 0L).apply()
-                    val config = widgetConfigStore.get(widgetId, settingsStore.settings.first())
-                    dispatch(context, config.tapAction, config.pinnedAlbumId)
-                }
-            } finally {
-                pendingResult.finish()
+            delay(DOUBLE_TAP_WINDOW_MILLIS)
+            if (preferences.getLong(tapKey, 0L) == now) {
+                preferences.edit().putLong(tapKey, 0L).apply()
+                val config = widgetConfigStore.get(widgetId, settingsStore.settings.first())
+                dispatch(context, config.tapAction, config.pinnedAlbumId)
             }
         }
     }
@@ -104,12 +98,9 @@ class WidgetActionReceiver : BroadcastReceiver() {
         val actionName = intent.getStringExtra(EXTRA_CONTROL)
         val action = PlaybackAction.entries.firstOrNull { it.name == actionName } ?: return
         val pending = goAsync()
+        pending.finish()
         applicationScope.launch {
-            try {
-                dispatchControl(context, action)
-            } finally {
-                pending.finish()
-            }
+            dispatchControl(context, action)
         }
     }
 
@@ -129,7 +120,8 @@ class WidgetActionReceiver : BroadcastReceiver() {
                         PlaybackAction.RANDOM_ALBUM -> AlbumSwitchMode.RANDOM
                         else -> AlbumSwitchMode.NEXT
                     }
-                if (nextAlbum(Trigger.WIDGET, mode = mode) == NextAlbumResult.AUTH_REQUIRED) {
+                val selection = nextAlbum(Trigger.WIDGET, mode = mode)
+                if (selection is RotationResult.AuthenticationRequired) {
                     val operation =
                         when (mode) {
                             AlbumSwitchMode.PREVIOUS -> HiddenSwitchOperation.PREVIOUS_ALBUM
@@ -137,7 +129,12 @@ class WidgetActionReceiver : BroadcastReceiver() {
                             AlbumSwitchMode.NEXT -> HiddenSwitchOperation.NEXT_ALBUM
                         }
                     context.startActivity(
-                        HiddenSwitchAuthActivity.intent(context, Trigger.WIDGET, operation = operation),
+                        HiddenSwitchAuthActivity.intent(
+                            context,
+                            Trigger.WIDGET,
+                            albumId = selection.albumId,
+                            operation = operation,
+                        ),
                     )
                 }
             }
@@ -180,8 +177,7 @@ class WidgetActionReceiver : BroadcastReceiver() {
                         ),
                     )
                 } else {
-                    if (pinnedAlbumId != null) settingsStore.setActiveAlbum(pinnedAlbumId)
-                    applyPreviousBackground(Trigger.WIDGET)
+                    applyPreviousBackground(Trigger.WIDGET, albumIdOverride = pinnedAlbumId)
                 }
             }
 
@@ -199,12 +195,18 @@ class WidgetActionReceiver : BroadcastReceiver() {
                             ),
                         )
                     } else {
-                        settingsStore.setActiveAlbum(pinnedAlbumId)
                         applyNextBackground(Trigger.WIDGET, albumIdOverride = pinnedAlbumId)
                     }
                 } else {
-                    if (nextAlbum(Trigger.WIDGET) == NextAlbumResult.AUTH_REQUIRED) {
-                        context.startActivity(HiddenSwitchAuthActivity.intent(context, Trigger.WIDGET))
+                    val selection = nextAlbum(Trigger.WIDGET)
+                    if (selection is RotationResult.AuthenticationRequired) {
+                        context.startActivity(
+                            HiddenSwitchAuthActivity.intent(
+                                context,
+                                Trigger.WIDGET,
+                                albumId = selection.albumId,
+                            ),
+                        )
                     }
                 }
 

@@ -15,7 +15,7 @@ License: GPL-3.0-or-later.
 - Ordered or shuffled rotation, timed intervals, fixed times, and unlock triggers.
 - Per-album crossfade duration and continuous slide or zoom animation with adjustable speed.
 - Album rotation toggle, pair reordering, and copying pairs between albums.
-- Folder import and linked folders scanned for new images before rotation.
+- One-time folder import and linked folders with configurable discovery intervals.
 - Fixed home or lock images selected from the phone.
 - Hidden albums with biometric, device credential, or custom PIN authentication.
 - Optional source-file moves into private storage and encryption for hidden images.
@@ -40,6 +40,24 @@ private storage, unhide the albums to restore those originals and verify them be
 After importing a configuration, grant its original folders or full access, then use
 **Settings → Restore images from folder** or **Scan granted locations** to restore missing private copies.
 
+# Rendering and scheduling
+
+Automatic rotation runs while the wallpaper is visible. When it becomes visible again,
+one overdue change is applied; missed intervals are not replayed. Wallpaper previews do not drive rotation.
+Static wallpapers do not schedule continuous frames or wakeup alarms.
+
+Settings provides a 30 FPS animation ceiling by default, with an optional 60 FPS ceiling,
+and an app-wide linked-folder scan interval (every rotation, 1 minute, 5 minutes, or 15 minutes).
+Shorter intervals increase battery consumption.
+
+Configuration imports are limited to 32 MiB and validated before replacement. Restore moved originals
+and decrypt private encrypted images before replacing their recovery metadata with an imported configuration.
+Encrypted image decoding accepts encoded files up to 64 MiB and does not create a plaintext album cache.
+Restoration and encryption maintenance stream larger existing files without loading them into a display buffer.
+
+Without an enabled recovery or system-authentication route, encrypted hidden albums require PIN entry
+after a process restart. The optional PIN remains an alternative to system authentication.
+
 # Planned Features
 
 - depth wallpapers
@@ -51,5 +69,6 @@ After importing a configuration, grant its original folders or full access, then
 - create an album selection for the app widget instead of always using all albums
 - Location based album selection (e.g., user can name multiple like "work" or "home", etc., and set a trigger like a specific wifi network)
 - battery optimisation
+- sharable .zip wallpaper packages
 
 # Known Bugs

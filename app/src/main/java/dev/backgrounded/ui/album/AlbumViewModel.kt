@@ -10,6 +10,7 @@ import androidx.navigation.toRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.backgrounded.core.display.DisplayRepository
+import dev.backgrounded.core.image.ComposedPreviewCache
 import dev.backgrounded.core.image.ThumbnailCache
 import dev.backgrounded.core.security.EncryptedImageStore
 import dev.backgrounded.data.datastore.SettingsStore
@@ -28,8 +29,6 @@ import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.SourceType
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.model.WallpaperSurface
-import dev.backgrounded.domain.render.BackgroundRenderer
-import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.domain.usecase.ApplyPair
 import dev.backgrounded.ui.nav.AlbumRoute
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,8 +53,8 @@ class AlbumViewModel
         private val albumRepository: AlbumRepository,
         private val imageImporter: ImageImporter,
         private val thumbnailCache: ThumbnailCache,
+        private val previewCache: ComposedPreviewCache,
         private val displayRepository: DisplayRepository,
-        private val backgroundRenderer: BackgroundRenderer,
         private val settingsStore: SettingsStore,
         private val applyPair: ApplyPair,
         private val linkedFolderScanner: LinkedFolderScanner,
@@ -81,7 +80,6 @@ class AlbumViewModel
         val message: StateFlow<Message?> = mutableMessage.asStateFlow()
         private val mutableFileError = MutableStateFlow<String?>(null)
         val fileError: StateFlow<String?> = mutableFileError.asStateFlow()
-        val thumbnailVersion: StateFlow<Int> = thumbnailCache.version
         private val mutablePairSources = MutableStateFlow<List<PairSource>>(emptyList())
         val pairSources: StateFlow<List<PairSource>> = mutablePairSources.asStateFlow()
 
@@ -178,20 +176,7 @@ class AlbumViewModel
             surface: WallpaperSurface,
             target: DisplayTarget,
             aspect: Float,
-        ): Bitmap? {
-            val source = thumbnailCache.get(background, PREVIEW_SOURCE_SIZE) ?: return null
-            val framing = background.framingFor(target, surface)
-            val width = (PREVIEW_HEIGHT * aspect).toInt().coerceAtLeast(1)
-            return backgroundRenderer.renderWindow(
-                framing = framing,
-                source = source,
-                viewport = BackgroundRenderer.Viewport(width, PREVIEW_HEIGHT),
-                scroll = ScrollGeometry.scrollFor(framing, width),
-                scrollOffset = 0.5f,
-                dim = background.dimForLock && surface == WallpaperSurface.LOCK,
-                allowScroll = surface == WallpaperSurface.HOME,
-            )
-        }
+        ): StateFlow<Bitmap?> = previewCache.observe(background, surface, target, aspect)
 
         fun addImages(uris: List<Uri>) {
             if (uris.isEmpty()) return
@@ -212,6 +197,36 @@ class AlbumViewModel
                     }
                 }
                 mutableMessage.value = Message(added, skipped)
+            }
+        }
+
+        @Suppress("TooGenericExceptionCaught") // Document providers may throw implementation-specific failures.
+        fun importFolder(treeUri: Uri) {
+            viewModelScope.launch {
+                try {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val dim = settingsStore.settings.first().lockDimDefault
+                        var added = 0
+                        var skipped = 0
+                        SafFolders.forEachImage(context, treeUri) { document ->
+                            val imported = imageImporter.import(document.uri)
+                            if (imported == null) {
+                                skipped++
+                            } else {
+                                val pairId = albumRepository.addPair(albumId, imported.toAsset(dim))
+                                if (album.value?.isHidden == true && settingsStore.settings.first().encryptHidden) {
+                                    albumRepository.getPair(pairId)?.home?.id?.let { encryptedImages.encryptAsset(it) }
+                                }
+                                added++
+                            }
+                            mutableMessage.value = Message(added, skipped)
+                        }
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    mutableFileError.value = "Folder import stopped: ${failure.message}"
+                }
             }
         }
 

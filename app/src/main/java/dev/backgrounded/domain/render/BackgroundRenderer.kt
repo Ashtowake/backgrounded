@@ -8,18 +8,17 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.util.LruCache
+import dev.backgrounded.core.image.ImageMemoryBudget
 import dev.backgrounded.domain.model.BackdropType
 import dev.backgrounded.domain.model.FitMode
 import dev.backgrounded.domain.model.Framing
-import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.ceil
 import kotlin.math.max
 
 @Singleton
 class BackgroundRenderer
-    @Inject
-    constructor() {
+    constructor(private val memory: ImageMemoryBudget? = null) {
         data class Viewport(val width: Int, val height: Int)
 
         data class Frame(
@@ -33,17 +32,18 @@ class BackgroundRenderer
             val gyroShiftY: Float = 0f,
             val gyroMargin: Float = 0f,
             val slide: SlideMotion.Position? = null,
+            val preparedBackdrop: Bitmap? = null,
         )
 
-        private val blurCache = LruCache<String, Bitmap>(BLUR_CACHE_ENTRIES)
+        private data class BlurKey(val source: Bitmap, val intensity: Int)
+
+        private val blurCache = LruCache<BlurKey, Bitmap>(BLUR_CACHE_ENTRIES)
 
         /** Prepare expensive blur work before a layer reaches the wallpaper drawing thread. */
         fun prepareBackdrop(
             source: Bitmap,
             framing: Framing,
-        ) {
-            if (framing.backdrop == BackdropType.BLUR) blurredBackdrop(source, framing.blurIntensity)
-        }
+        ): Bitmap? = if (framing.backdrop == BackdropType.BLUR) blurredBackdrop(source, framing.blurIntensity) else null
 
         fun rotated(
             source: Bitmap,
@@ -58,10 +58,9 @@ class BackgroundRenderer
             val bounds = RectF(0f, 0f, source.width.toFloat(), source.height.toFloat())
             matrix.mapRect(bounds)
             val output =
-                Bitmap.createBitmap(
+                createBitmap(
                     ceil(bounds.width()).toInt().coerceAtLeast(1),
                     ceil(bounds.height()).toInt().coerceAtLeast(1),
-                    Bitmap.Config.ARGB_8888,
                 )
             output.eraseColor(Color.TRANSPARENT)
             Canvas(output).apply {
@@ -83,20 +82,31 @@ class BackgroundRenderer
         ): Bitmap? {
             if (viewport.width <= 0 || viewport.height <= 0) return null
             val rotated = rotated(source, framing.rotationDegrees)
-            val output = Bitmap.createBitmap(viewport.width, viewport.height, Bitmap.Config.ARGB_8888)
+            val available = memory?.remaining() ?: Long.MAX_VALUE
+            val scale =
+                kotlin.math.sqrt(available.toDouble() / (viewport.width.toLong() * viewport.height * 4))
+                    .coerceAtMost(1.0)
+            val actual =
+                Viewport(
+                    (viewport.width * scale).toInt().coerceAtLeast(1),
+                    (viewport.height * scale).toInt().coerceAtLeast(1),
+                )
+            var output: Bitmap? = null
             try {
+                output = createBitmap(actual.width, actual.height)
                 draw(
-                    canvas = Canvas(output),
+                    canvas = Canvas(requireNotNull(output)),
                     rotatedSource = rotated,
-                    viewport = viewport,
+                    viewport = actual,
                     frame =
                         Frame(
                             framing = framing,
-                            scroll = scroll,
+                            scroll = scroll.copy(slackPixels = (scroll.slackPixels * scale).toInt()),
                             scrollOffset = scrollOffset,
                             dim = dim,
                             alpha = 255,
                             allowScroll = allowScroll,
+                            preparedBackdrop = prepareBackdrop(rotated, framing),
                         ),
                 )
             } finally {
@@ -106,6 +116,7 @@ class BackgroundRenderer
         }
 
         /** Draws the visible window directly onto [canvas]; only the visible pixels are painted. */
+        @Suppress("LongMethod")
         fun draw(
             canvas: Canvas,
             rotatedSource: Bitmap,
@@ -122,7 +133,15 @@ class BackgroundRenderer
             canvas.translate(-translation.toFloat() + frame.gyroShiftX, frame.gyroShiftY)
             val margin = frame.gyroMargin
             if (framing.backdrop != BackdropType.NONE) {
-                drawBackdrop(canvas, rotatedSource, framing, virtualWidth, viewport.height, frame.alpha, margin)
+                drawBackdrop(
+                    canvas,
+                    framing,
+                    virtualWidth,
+                    viewport.height,
+                    frame.alpha,
+                    margin,
+                    frame.preparedBackdrop,
+                )
             }
             val placement =
                 FitGeometry.placement(
@@ -211,12 +230,12 @@ class BackgroundRenderer
 
         private fun drawBackdrop(
             canvas: Canvas,
-            source: Bitmap,
             framing: Framing,
             virtualWidth: Int,
             screenHeight: Int,
             alpha: Int,
             margin: Float,
+            preparedBackdrop: Bitmap?,
         ) {
             val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { this.alpha = alpha }
             when (framing.backdrop) {
@@ -237,7 +256,7 @@ class BackgroundRenderer
                 }
 
                 BackdropType.BLUR -> {
-                    val blurred = blurredBackdrop(source, framing.blurIntensity)
+                    val blurred = requireNotNull(preparedBackdrop) { "Blur must be prepared before drawing" }
                     val coverScale =
                         max(
                             virtualWidth.toFloat() / blurred.width,
@@ -269,18 +288,32 @@ class BackgroundRenderer
             intensity: Int,
         ): Bitmap {
             val clamped = intensity.coerceIn(0, 100)
-            val key = "${System.identityHashCode(source)}:$clamped"
+            val key = BlurKey(source, clamped)
             blurCache.get(key)?.let { return it }
             val width = (source.width / BLUR_DOWNSCALE).coerceAtLeast(1)
             val height = (source.height / BLUR_DOWNSCALE).coerceAtLeast(1)
-            val small = Bitmap.createScaledBitmap(source, width, height, true)
-            val radius = (clamped / 100f * max(width, height) / 10f).toInt().coerceAtLeast(1)
-            val passes = if (clamped >= BLUR_EXTRA_PASS_THRESHOLD) 3 else 2
-            val blurred = BoxBlur.blur(small, radius, passes)
-            small.recycle()
-            blurCache.put(key, blurred)
-            return blurred
+            val reservation = memory?.reserve(width.toLong() * height * 16)
+            var small: Bitmap? = null
+            try {
+                small = Bitmap.createScaledBitmap(source, width, height, true)
+                val radius = (clamped / 100f * max(width, height) / 10f).toInt().coerceAtLeast(1)
+                val passes = if (clamped >= BLUR_EXTRA_PASS_THRESHOLD) 3 else 2
+                val blurred = BoxBlur.blur(small, radius, passes)
+                memory?.track(blurred)
+                blurCache.put(key, blurred)
+                return blurred
+            } finally {
+                if (small !== source) small?.recycle()
+                reservation?.close()
+            }
         }
+
+        private fun createBitmap(
+            width: Int,
+            height: Int,
+        ): Bitmap =
+            memory?.create(width, height)
+                ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
 
         private companion object {
             const val BLUR_DOWNSCALE = 8

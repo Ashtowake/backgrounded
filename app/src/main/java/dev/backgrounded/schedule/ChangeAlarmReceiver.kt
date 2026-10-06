@@ -5,10 +5,8 @@ import android.content.Context
 import android.content.Intent
 import dagger.hilt.android.AndroidEntryPoint
 import dev.backgrounded.core.di.ApplicationScope
-import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -28,15 +26,7 @@ class ChangeAlarmReceiver : BroadcastReceiver() {
         intent: Intent,
     ) {
         if (intent.action != ACTION) return
-        val pendingResult = goAsync()
-        applicationScope.launch {
-            try {
-                applyNextBackground(Trigger.TIMER, expectedScheduleAt = intent.getLongExtra(EXTRA_EXPECTED_AT, 0L))
-            } finally {
-                changeScheduler.rearm()
-                pendingResult.finish()
-            }
-        }
+        changeScheduler.cancel()
     }
 
     companion object {

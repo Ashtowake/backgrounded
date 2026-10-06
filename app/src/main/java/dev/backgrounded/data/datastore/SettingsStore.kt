@@ -129,6 +129,69 @@ class SettingsStore
 
         suspend fun setDebugDiagnostics(enabled: Boolean) = edit { it[Keys.DEBUG_DIAGNOSTICS] = enabled }
 
+        suspend fun setPendingUnlock(pending: Boolean) = edit { it[Keys.PENDING_UNLOCK] = pending }
+
+        suspend fun setAnimationFps(fps: Int) = edit { it[Keys.ANIMATION_FPS] = if (fps == 60) 60 else 30 }
+
+        suspend fun setFolderScanSeconds(seconds: Int) =
+            edit {
+                require(seconds in listOf(0, 60, 300, 900))
+                it[Keys.FOLDER_SCAN_SECONDS] = seconds
+            }
+
+        suspend fun commitPlayback(
+            albumId: Long?,
+            pairId: Long?,
+            changedAt: Long,
+            paused: Boolean,
+            unlock: UnlockState? = null,
+        ) = edit {
+            val selectionChanged =
+                it[Keys.CURRENT_CHANGED_AT] != changedAt ||
+                    it[Keys.CURRENT_BACKGROUND] != (pairId ?: Keys.UNSET) ||
+                    it[Keys.ACTIVE_ALBUM] != (albumId ?: Keys.UNSET)
+            it[Keys.ACTIVE_ALBUM] = albumId ?: Keys.UNSET
+            it[Keys.CURRENT_BACKGROUND] = pairId ?: Keys.UNSET
+            it[Keys.CURRENT_CHANGED_AT] = changedAt
+            it[Keys.ROTATION_PAUSED] = paused
+            if (unlock != null) {
+                it[Keys.UNLOCK_LAST_APPLIED_AT] = unlock.lastAppliedAt
+                it[Keys.UNLOCK_SINCE_APPLY] = unlock.unlocksSinceApply
+                it[Keys.UNLOCK_APPLIED_TODAY] = unlock.appliedToday
+                it[Keys.UNLOCK_DAY] = unlock.dayEpochDay
+            }
+            if (selectionChanged) {
+                it[Keys.NEXT_TRIGGER_AT] = 0L
+                it[Keys.PENDING_UNLOCK] = false
+            }
+        }
+
+        suspend fun restoreConfiguration(
+            backup: dev.backgrounded.data.backup.SettingsBackup?,
+            albumIds: List<Long>,
+        ) = edit { prefs ->
+            val saved = backup ?: dev.backgrounded.data.backup.SettingsBackup()
+            prefs[Keys.ROTATION_PAUSED] = saved.rotationPaused
+            prefs[Keys.ANIMATION_FPS] = saved.animationFps
+            prefs[Keys.FOLDER_SCAN_SECONDS] = saved.folderScanSeconds
+            prefs[Keys.AUTHENTICATE_HIDDEN_SWITCH] = saved.authenticateHiddenSwitch
+            prefs[Keys.DOUBLE_TAP_ENABLED] = saved.doubleTapEnabled
+            prefs[Keys.DOUBLE_TAP_MODE] = saved.doubleTapMode
+            prefs[Keys.DOUBLE_TAP_ACTION] = saved.doubleTapAction
+            prefs[Keys.EXTERNAL_CONTROL] = saved.externalControlEnabled
+            prefs[Keys.WIDGET_ICON_SOURCE] = saved.widgetIconSource
+            prefs[Keys.WIDGET_ICON_ALPHA] = saved.widgetIconAlpha
+            prefs[Keys.WIDGET_BACKGROUND_ALPHA] = saved.widgetBackgroundAlpha
+            prefs[Keys.WIDGET_TAP_ACTION] = saved.widgetTapAction
+            prefs[Keys.WIDGET_DOUBLE_TAP_ACTION] = saved.widgetDoubleTapAction
+            prefs[Keys.WIDGET_PINNED_ALBUM] = saved.widgetPinnedAlbumIndex?.let { albumIds.getOrNull(it) } ?: Keys.UNSET
+            prefs[Keys.ACTIVE_ALBUM] = saved.activeAlbumIndex?.let { albumIds.getOrNull(it) } ?: Keys.UNSET
+            prefs[Keys.CURRENT_BACKGROUND] = Keys.UNSET
+            prefs[Keys.CURRENT_CHANGED_AT] = 0L
+            prefs[Keys.NEXT_TRIGGER_AT] = 0L
+            prefs[Keys.PENDING_UNLOCK] = false
+        }
+
         private suspend fun edit(transform: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
             context.settingsDataStore.edit(transform)
         }
@@ -166,6 +229,9 @@ class SettingsStore
                 authenticateHiddenSwitch = this[Keys.AUTHENTICATE_HIDDEN_SWITCH] ?: true,
                 encryptHidden = this[Keys.ENCRYPT_HIDDEN] ?: false,
                 debugDiagnostics = this[Keys.DEBUG_DIAGNOSTICS] ?: false,
+                pendingUnlock = this[Keys.PENDING_UNLOCK] ?: false,
+                animationFps = if (this[Keys.ANIMATION_FPS] == 60) 60 else 30,
+                folderScanSeconds = this[Keys.FOLDER_SCAN_SECONDS]?.takeIf { it in listOf(0, 60, 300, 900) } ?: 60,
             )
 
         private object Keys {
@@ -198,6 +264,9 @@ class SettingsStore
             val HIDE_SOURCES = booleanPreferencesKey("hide_sources_systemwide")
             val AUTHENTICATE_HIDDEN_SWITCH = booleanPreferencesKey("authenticate_hidden_switch")
             val ENCRYPT_HIDDEN = booleanPreferencesKey("encrypt_hidden")
+            val PENDING_UNLOCK = booleanPreferencesKey("pending_unlock")
+            val ANIMATION_FPS = intPreferencesKey("animation_fps")
+            val FOLDER_SCAN_SECONDS = intPreferencesKey("folder_scan_seconds")
             val DEBUG_DIAGNOSTICS = booleanPreferencesKey("debug_diagnostics")
 
             const val UNSET = -1L

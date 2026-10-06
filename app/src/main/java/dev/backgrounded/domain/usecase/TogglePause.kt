@@ -1,9 +1,8 @@
 package dev.backgrounded.domain.usecase
 
-import dev.backgrounded.data.datastore.SettingsStore
+import dev.backgrounded.domain.rotation.RotationCoordinator
 import dev.backgrounded.schedule.ChangeScheduler
 import dev.backgrounded.widget.WidgetUpdater
-import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -11,16 +10,14 @@ import javax.inject.Singleton
 class TogglePause
     @Inject
     constructor(
-        private val settingsStore: SettingsStore,
+        private val coordinator: RotationCoordinator,
         private val changeScheduler: ChangeScheduler,
         private val widgetUpdater: WidgetUpdater,
     ) {
         suspend operator fun invoke(): Boolean {
-            val paused = settingsStore.settings.first().rotationPaused
-            val newValue = !paused
-            settingsStore.setRotationPaused(newValue)
+            val newValue = coordinator.pause()
             changeScheduler.rearm()
-            widgetUpdater.refreshAll()
+            widgetUpdater.refreshPlayback()
             return newValue
         }
     }

@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="dev.backgrounded.core.diagnostics.DeniedFolderProvider"
+            android:authorities="${applicationId}.denied"
+            android:exported="false" />
+        <receiver
+            android:name="dev.backgrounded.core.diagnostics.DiagnosticsSnapshotReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="dev.backgrounded.DEBUG_SNAPSHOT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

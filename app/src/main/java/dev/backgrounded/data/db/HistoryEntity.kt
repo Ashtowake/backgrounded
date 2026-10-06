@@ -7,7 +7,7 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "history",
-    indices = [Index("albumId"), Index("appliedAt")],
+    indices = [Index("albumId"), Index("appliedAt"), Index(value = ["albumId", "appliedAt", "id"])],
 )
 data class HistoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

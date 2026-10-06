@@ -10,11 +10,11 @@ import dev.backgrounded.core.security.HiddenSwitchAuthActivity
 import dev.backgrounded.core.security.HiddenSwitchOperation
 import dev.backgrounded.data.datastore.SettingsStore
 import dev.backgrounded.domain.model.Trigger
+import dev.backgrounded.domain.rotation.RotationResult
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.HiddenAlbumSwitchPolicy
 import dev.backgrounded.domain.usecase.NextAlbum
-import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -53,8 +53,9 @@ class ActionTrampolineActivity : ComponentActivity() {
             ACTION_NEXT -> applyNextBackground(Trigger.EXTERNAL)
             ACTION_PREVIOUS -> applyPreviousBackground(Trigger.EXTERNAL)
             ACTION_NEXT_ALBUM -> {
-                if (nextAlbum(Trigger.EXTERNAL) == NextAlbumResult.AUTH_REQUIRED) {
-                    startActivity(HiddenSwitchAuthActivity.intent(this, Trigger.EXTERNAL))
+                val selection = nextAlbum(Trigger.EXTERNAL)
+                if (selection is RotationResult.AuthenticationRequired) {
+                    startActivity(HiddenSwitchAuthActivity.intent(this, Trigger.EXTERNAL, albumId = selection.albumId))
                 }
             }
             ACTION_TOGGLE_PAUSE -> togglePause()
@@ -76,7 +77,6 @@ class ActionTrampolineActivity : ComponentActivity() {
                             ),
                         )
                     } else {
-                        settingsStore.setActiveAlbum(albumId)
                         applyNextBackground(Trigger.EXTERNAL, albumIdOverride = albumId)
                     }
                 }

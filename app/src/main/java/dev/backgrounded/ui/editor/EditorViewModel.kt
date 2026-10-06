@@ -66,8 +66,8 @@ class EditorViewModel
         private val renderRequests = Channel<Unit>(Channel.CONFLATED)
         private var viewportWidth = 0
         private var viewportHeight = 0
-        private var cachedSource: Bitmap? = null
-        private var cachedSourceKey: String? = null
+        private val cachedSources = LinkedHashMap<String, Bitmap>(2, 0.75f, true)
+        private var cacheDisposed = false
 
         init {
             viewModelScope.launch {
@@ -464,14 +464,30 @@ class EditorViewModel
             }
         }
 
+        @Suppress("ReturnCount")
         private suspend fun obtainSource(asset: Background): Bitmap? {
-            val key = "${asset.id}:${asset.storageRef}"
-            val cached = cachedSource
-            if (cached != null && cachedSourceKey == key && !cached.isRecycled) return cached
-            cached?.recycle()
-            val decoded = bitmapLoader.decode(asset, MAX_SOURCE_DIMENSION, MAX_SOURCE_DIMENSION)
-            cachedSource = decoded
-            cachedSourceKey = if (decoded != null) key else null
+            val key = "${asset.id}:${asset.storageRef}:${asset.sha256}"
+            synchronized(cachedSources) {
+                if (cacheDisposed) return null
+                cachedSources[key]?.takeUnless { it.isRecycled }?.let { return it }
+            }
+            val decoded =
+                bitmapLoader.decode(
+                    asset, MAX_SOURCE_DIMENSION, MAX_SOURCE_DIMENSION,
+                    wallpaperPriority = false,
+                ) ?: return null
+            synchronized(cachedSources) {
+                if (cacheDisposed) {
+                    decoded.recycle()
+                    return null
+                }
+                cachedSources[key] = decoded
+                while (cachedSources.size > 2) {
+                    val first = cachedSources.entries.iterator()
+                    first.next().value.recycle()
+                    first.remove()
+                }
+            }
             return decoded
         }
 
@@ -486,8 +502,12 @@ class EditorViewModel
 
         override fun onCleared() {
             renderRequests.close()
-            cachedSource?.recycle()
-            cachedSource = null
+            // Native rendering can still be unwinding after coroutine cancellation.
+            // Drop ownership; its local reference keeps the source alive until that work finishes.
+            synchronized(cachedSources) {
+                cacheDisposed = true
+                cachedSources.clear()
+            }
             super.onCleared()
         }
 

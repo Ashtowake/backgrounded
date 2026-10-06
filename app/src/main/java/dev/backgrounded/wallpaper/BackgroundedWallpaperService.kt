@@ -1,7 +1,5 @@
 package dev.backgrounded.wallpaper
 
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.app.KeyguardManager
 import android.app.WallpaperManager
 import android.content.BroadcastReceiver
@@ -21,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
+import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -46,6 +45,7 @@ import dev.backgrounded.domain.render.BackgroundRenderer
 import dev.backgrounded.domain.render.BitmapLoader
 import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.domain.render.SlideMotion
+import dev.backgrounded.domain.rotation.RotationResult
 import dev.backgrounded.domain.state.WallpaperBus
 import dev.backgrounded.domain.unlock.UnlockPolicyEvaluator
 import dev.backgrounded.domain.usecase.ApplyNextBackground
@@ -53,12 +53,16 @@ import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.NextAlbum
 import dev.backgrounded.domain.usecase.TogglePause
 import dev.backgrounded.schedule.ChangeScheduler
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import javax.inject.Inject
 import kotlin.math.abs
@@ -104,10 +108,10 @@ class BackgroundedWallpaperService : WallpaperService() {
     @ApplicationScope
     lateinit var applicationScope: CoroutineScope
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val engines = mutableSetOf<BackgroundedEngine>()
     private val tapDetector = DoubleTapDetector()
-    private val unlockMutex = Mutex()
     private var receiverRegistered = false
 
     @Volatile
@@ -120,9 +124,19 @@ class BackgroundedWallpaperService : WallpaperService() {
         getSystemService(KeyguardManager::class.java)
     }
 
+    @Inject lateinit var rotationCoordinator: dev.backgrounded.domain.rotation.RotationCoordinator
+
+    @Inject lateinit var diagnostics: dev.backgrounded.core.diagnostics.LocalDiagnostics
+
+    @Inject lateinit var pinVault: dev.backgrounded.core.security.PinVault
+
+    @Inject lateinit var folderDiscovery: dev.backgrounded.data.importer.FolderDiscoveryController
+
+    @Suppress("CyclomaticComplexMethod")
     override fun onCreate() {
         super.onCreate()
-        applicationScope.launch {
+        serviceScope.launch {
+            rotationCoordinator.run(Unit) { rotationCoordinator.recover() }
             val settings = settingsStore.settings.first()
             wallpaperBus.set(
                 CurrentWallpaper(
@@ -132,7 +146,7 @@ class BackgroundedWallpaperService : WallpaperService() {
                 ),
             )
         }
-        applicationScope.launch {
+        serviceScope.launch {
             wallpaperBus.state.collectLatest { wallpaper ->
                 val pairId = wallpaper.pairId
                 if (pairId == null) {
@@ -146,9 +160,15 @@ class BackgroundedWallpaperService : WallpaperService() {
                 }
             }
         }
-        applicationScope.launch {
+        serviceScope.launch {
             settingsStore.settings.collect { settings ->
+                val previous = settingsCache
                 settingsCache = settings
+                if (previous.rotationPaused != settings.rotationPaused ||
+                    previous.activeAlbumId != settings.activeAlbumId || previous.pendingUnlock != settings.pendingUnlock
+                ) {
+                    changeScheduler.rearm()
+                }
                 mainHandler.post { engines.forEach { engine -> engine.onSettingsChanged() } }
             }
         }
@@ -162,7 +182,33 @@ class BackgroundedWallpaperService : WallpaperService() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         receiverRegistered = true
-        applicationScope.launch { changeScheduler.rearm() }
+        serviceScope.launch {
+            changeScheduler.due.collectLatest { expected ->
+                if (expected == Long.MIN_VALUE || !changeScheduler.hasVisibleEngine()) return@collectLatest
+                val pending = settingsStore.settings.first().pendingUnlock
+                val result =
+                    applyNextBackground.execute(
+                        if (pending) Trigger.UNLOCK else Trigger.TIMER,
+                        expectedScheduleAt = expected,
+                    )
+                if (result != RotationResult.Applied) {
+                    val settings = settingsStore.settings.first()
+                    if (settings.nextTriggerAt == expected && changeScheduler.hasVisibleEngine()) {
+                        val hidden = settings.activeAlbumId?.let { albumRepository.getAlbum(it)?.isHidden } == true
+                        changeScheduler.failed(locked = hidden && settings.encryptHidden && !pinVault.unlocked())
+                    }
+                }
+            }
+        }
+        serviceScope.launch {
+            pinVault.unlockedState.collect { unlocked ->
+                if (unlocked) {
+                    changeScheduler.authenticated()
+                    mainHandler.post { engines.forEach { it.invalidate() } }
+                }
+            }
+        }
+        serviceScope.launch { changeScheduler.rearm() }
     }
 
     override fun onDestroy() {
@@ -170,11 +216,15 @@ class BackgroundedWallpaperService : WallpaperService() {
             unregisterReceiver(unlockReceiver)
             receiverRegistered = false
         }
+        engines.toList().forEach { it.destroyResources() }
+        serviceScope.cancel()
+        mainHandler.removeCallbacksAndMessages(null)
         engines.clear()
         super.onDestroy()
     }
 
     override fun onCreateEngine(): Engine {
+        diagnostics.count(settingsCache.debugDiagnostics, "engine_created")
         val engine = BackgroundedEngine()
         engines.add(engine)
         return engine
@@ -182,17 +232,19 @@ class BackgroundedWallpaperService : WallpaperService() {
 
     private fun dispatchGestureAction() {
         if (!settingsCache.doubleTapEnabled) return
-        applicationScope.launch {
+        serviceScope.launch {
             when (settingsCache.doubleTapAction) {
                 GestureAction.NEXT -> applyNextBackground(Trigger.GESTURE)
                 GestureAction.PREVIOUS -> applyPreviousBackground(Trigger.GESTURE)
                 GestureAction.NEXT_ALBUM -> {
-                    if (nextAlbum(Trigger.GESTURE) == dev.backgrounded.domain.usecase.NextAlbumResult.AUTH_REQUIRED) {
+                    val selection = nextAlbum(Trigger.GESTURE)
+                    if (selection is RotationResult.AuthenticationRequired) {
                         runCatching {
                             startActivity(
                                 dev.backgrounded.core.security.HiddenSwitchAuthActivity.intent(
                                     this@BackgroundedWallpaperService,
                                     Trigger.GESTURE,
+                                    albumId = selection.albumId,
                                 ),
                             )
                         }
@@ -217,32 +269,40 @@ class BackgroundedWallpaperService : WallpaperService() {
             ) {
                 when (intent?.action) {
                     Intent.ACTION_USER_PRESENT -> {
+                        val unlockedAt = System.currentTimeMillis()
                         mainHandler.post { engines.forEach { it.invalidate() } }
-                        applicationScope.launch { handleUnlock() }
+                        serviceScope.launch { handleUnlock(unlockedAt) }
                     }
                     Intent.ACTION_SCREEN_OFF -> mainHandler.post { engines.forEach { it.invalidate() } }
                 }
             }
         }
 
-    private suspend fun handleUnlock() =
-        unlockMutex.withLock {
+    private suspend fun handleUnlock(unlockedAt: Long) =
+        rotationCoordinator.run(Unit) {
             val settings = settingsStore.settings.first()
-            val albumId = settings.activeAlbumId ?: return@withLock
-            val album = albumRepository.getAlbum(albumId) ?: return@withLock
-            val now = System.currentTimeMillis()
+            val albumId = settings.activeAlbumId ?: return@run
+            val album = albumRepository.getAlbum(albumId) ?: return@run
+            if (!album.unlockPolicy.enabled) return@run
             val epochDay = LocalDate.now().toEpochDay()
-            val shouldChange =
-                UnlockPolicyEvaluator.shouldChange(
+            val latest =
+                if (settings.currentChangedAt >= unlockedAt) {
+                    albumRepository.latestAutomaticChange(albumId, settings.currentChangedAt)
+                } else {
+                    null
+                }
+            val decision =
+                UnlockPolicyEvaluator.onUnlock(
                     policy = album.unlockPolicy,
                     state = settings.unlockState,
-                    nowMillis = now,
+                    unlockedAt = unlockedAt,
                     epochDay = epochDay,
+                    automaticChangedAt = latest,
                 )
-            val afterUnlock = UnlockPolicyEvaluator.stateAfterUnlock(settings.unlockState, epochDay)
-            settingsStore.setUnlockState(afterUnlock)
-            if (shouldChange && applyNextBackground(Trigger.UNLOCK)) {
-                settingsStore.setUnlockState(UnlockPolicyEvaluator.stateAfterApply(afterUnlock, now, epochDay))
+            settingsStore.setUnlockState(decision.state)
+            if (decision.pending) {
+                settingsStore.setPendingUnlock(true)
+                changeScheduler.rearm()
             }
         }
 
@@ -257,6 +317,55 @@ class BackgroundedWallpaperService : WallpaperService() {
                     }
                 },
             )
+        private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        private var loadJob: Job? = null
+        private var generation = 0L
+        private var alive = true
+        private var surfaceAvailable = false
+        private var frameScheduled = false
+        private var lastFrameNanos = 0L
+        private var scheduledAtNanos = 0L
+        private val frameCallback =
+            Choreographer.FrameCallback { nanos ->
+                frameScheduled = false
+                if (alive && visible && surfaceAvailable) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (previousLayer != null) {
+                        fade = ((now - fadeStartedAt).toFloat() / fadeDuration).coerceIn(0f, 1f)
+                        if (fade >= 1f) finishFade()
+                    }
+                    drawNow()
+                    lastFrameNanos = nanos
+                    val moving = layer?.slide?.mode?.let { it != SlideMode.OFF } == true
+                    if (previousLayer != null || moving) {
+                        scheduleFrame(if (previousLayer != null) 0L else slideFrameDelay())
+                    }
+                }
+            }
+
+        private fun scheduleFrame(delayMillis: Long = 0L) {
+            if (!alive || !visible || !surfaceAvailable) return
+            val now = System.nanoTime()
+            val interval = 1_000_000_000L / settingsCache.animationFps
+            val at = maxOf(now + delayMillis * 1_000_000L, lastFrameNanos + interval)
+            if (frameScheduled && at >= scheduledAtNanos) return
+            if (frameScheduled) Choreographer.getInstance().removeFrameCallback(frameCallback)
+            frameScheduled = true
+            scheduledAtNanos = at
+            val delay = ((at - now).coerceAtLeast(0) + 999999) / 1_000_000L
+            diagnostics.count(settingsCache.debugDiagnostics, "frame_posted")
+            Choreographer.getInstance().postFrameCallbackDelayed(frameCallback, delay)
+        }
+
+        private fun draw() {
+            scheduleFrame()
+        }
+
+        private fun stopFrames() {
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            frameScheduled = false
+        }
+
         private var surfaceWidth = 0
         private var surfaceHeight = 0
         private var displayTarget = DisplayTarget.INNER
@@ -298,18 +407,11 @@ class BackgroundedWallpaperService : WallpaperService() {
                     accuracy: Int,
                 ) = Unit
             }
-        private var fadeAnimator: ValueAnimator? = null
+        private var fadeStartedAt = 0L
+        private var fadeDuration = 800L
         private var dirty = true
         private var rendering = false
         private var visible = false
-        private val slideTick =
-            object : Runnable {
-                override fun run() {
-                    if (!visible || layer?.slide?.mode?.let { it != SlideMode.OFF } != true) return
-                    draw()
-                    mainHandler.postDelayed(this, slideFrameDelay())
-                }
-            }
 
         init {
             setOffsetNotificationsEnabled(true)
@@ -317,6 +419,7 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
 
         fun onSettingsChanged() {
+            updateSlideTicker()
             applyTouchMode()
             updateGyroSubscription()
         }
@@ -336,13 +439,15 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
 
         fun invalidate() {
+            generation++
             dirty = true
-            loadIfNeeded()
+            if (visible) loadIfNeeded()
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
             super.onSurfaceCreated(holder)
-            if (!isPreview) applicationScope.launch { settingsStore.completeWallpaperSetup() }
+            surfaceAvailable = true
+            if (!isPreview) serviceScope.launch { settingsStore.completeWallpaperSetup() }
             loadIfNeeded()
         }
 
@@ -353,6 +458,10 @@ class BackgroundedWallpaperService : WallpaperService() {
             height: Int,
         ) {
             super.onSurfaceChanged(holder, format, width, height)
+            surfaceAvailable = true
+            if (!isPreview && visible) changeScheduler.visible(this, true)
+            if (!isPreview && visible) folderDiscovery.visible(this, true)
+            generation++
             surfaceWidth = width
             surfaceHeight = height
             val newTarget = displayRepository.targetForSurface(width, height)
@@ -365,18 +474,35 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
+            surfaceAvailable = false
+            if (!isPreview) changeScheduler.visible(this, false)
+            if (!isPreview) folderDiscovery.visible(this, false)
+            generation++
+            surfaceWidth = 0
+            surfaceHeight = 0
+            loadJob?.cancel()
+            stopFrames()
             releaseLayers()
             super.onSurfaceDestroyed(holder)
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
             this.visible = visible
+            if (!isPreview) changeScheduler.visible(this, visible)
+            if (!isPreview) folderDiscovery.visible(this, visible)
             if (visible) {
                 lastTranslation = -1
                 lastMotionKey = null
                 draw()
                 dirty = true
                 loadIfNeeded()
+            }
+            if (!visible) {
+                generation++
+                loadJob?.cancel()
+                dirty = true
+                finishFade()
+                stopFrames()
             }
             updateSlideTicker()
             updateGyroSubscription()
@@ -426,8 +552,25 @@ class BackgroundedWallpaperService : WallpaperService() {
             }
         }
 
-        override fun onDestroy() {
+        fun destroyResources() {
+            if (!alive) return
+            diagnostics.count(settingsCache.debugDiagnostics, "engine_destroyed")
+            alive = false
+            visible = false
+            surfaceAvailable = false
+            generation++
+            engines.remove(this)
+            if (!isPreview) changeScheduler.visible(this, false)
+            if (!isPreview) folderDiscovery.visible(this, false)
+            engineScope.cancel()
+            stopFrames()
+            surfaceWidth = 0
+            surfaceHeight = 0
             releaseLayers()
+        }
+
+        override fun onDestroy() {
+            destroyResources()
             super.onDestroy()
         }
 
@@ -437,106 +580,124 @@ class BackgroundedWallpaperService : WallpaperService() {
             )
         }
 
-        @Suppress("CyclomaticComplexMethod")
+        @Suppress("CyclomaticComplexMethod", "LongMethod", "ComplexCondition", "TooGenericExceptionCaught")
         private fun loadIfNeeded() {
-            if (!dirty || surfaceWidth <= 0 || surfaceHeight <= 0) return
+            if (!alive || !visible || !surfaceAvailable || !dirty || surfaceWidth <= 0 || surfaceHeight <= 0) return
             if (rendering) return
             rendering = true
             dirty = false
+            val requestGeneration = generation
             val width = surfaceWidth
             val height = surfaceHeight
             val target = displayTarget
-            applicationScope.launch {
-                val pair = pairCache
-                val wallpaper = wallpaperBus.state.value
-                val album = pair?.albumId?.let { albumRepository.getAlbum(it) }
-                val surface = resolveSurface()
-                val asset = pair?.imageFor(surface)
-                val framing = asset?.framingFor(target, surface)
-                val scroll =
-                    framing?.let { ScrollGeometry.scrollFor(it, width) }
-                        ?: ScrollGeometry.Scroll(0, 0f, 1f)
-                val decodeWidth = (width + scroll.slackPixels).coerceAtMost(DECODE_MAX_DIMENSION)
-                val decodeHeight = height.coerceAtMost(DECODE_MAX_DIMENSION)
-                val source = asset?.let { bitmapLoader.decode(it, decodeWidth, decodeHeight) }
-                val rotated = prepareRotated(source, framing)
-                mainHandler.post {
-                    rendering = false
-                    if (renderIsStale(width, height, target, surface)) {
-                        recyclePrepared(source, rotated)
-                        dirty = true
-                        loadIfNeeded()
-                        return@post
-                    }
-                    if (asset == null || framing == null || source == null) {
-                        recyclePrepared(source, rotated)
-                        return@post
-                    }
-                    val dim = asset.dimForLock && surface == WallpaperSurface.LOCK
-                    val scrolls = surface == WallpaperSurface.HOME
-                    val key = LayerKey(asset.storageRef, framing, scrolls, dim, width, height)
-                    val slideMode =
-                        if (album?.scheduleType == ScheduleType.INTERVAL) album.slideMode else SlideMode.OFF
-                    val slideSpeed = album?.slideSpeedPxPerSecond ?: DEFAULT_SLIDE_SPEED
-                    val crossfadeEnabled = album?.crossfadeEnabled ?: true
-                    val crossfadeDurationMs = album?.crossfadeDurationMs ?: 800
-                    if (key == layerKey) {
-                        recyclePrepared(source, rotated)
-                        layer?.apply {
-                            slide = SlideSettings(slideMode, slideSpeed, wallpaper.changedAt)
-                            this.crossfadeDurationMs = crossfadeDurationMs
+            val surface = resolveSurface()
+            val pair = pairCache
+            val wallpaper = wallpaperBus.state.value
+            loadJob =
+                engineScope.launch {
+                    var source: Bitmap? = null
+                    var rotated: Bitmap? = null
+                    var installed = false
+                    try {
+                        val asset = pair?.imageFor(surface) ?: return@launch
+                        if (pair.id != wallpaper.pairId) return@launch
+                        if (asset.sourceType == dev.backgrounded.domain.model.SourceType.ENCRYPTED_IMPORT &&
+                            !pinVault.unlocked()
+                        ) {
+                            settingsStore.setLastError("Hidden images are locked. Authenticate to resume.")
+                            return@launch
                         }
-                        if (!crossfadeEnabled) finishFade()
+                        val framing = asset.framingFor(target, surface)
+                        val album = albumRepository.getAlbum(pair.albumId)
+                        val dim = asset.dimForLock && surface == WallpaperSurface.LOCK
+                        val scrolls = surface == WallpaperSurface.HOME
+                        val key =
+                            LayerKey(
+                                asset.id, asset.sha256, asset.storageRef, framing, scrolls, dim,
+                                target, surface, width, height,
+                            )
+                        val slideMode =
+                            if (album?.scheduleType == ScheduleType.INTERVAL) album.slideMode else SlideMode.OFF
+                        val speed = album?.slideSpeedPxPerSecond ?: DEFAULT_SLIDE_SPEED
+                        val duration = album?.crossfadeDurationMs ?: 800
+                        if (requestGeneration != generation || !alive || !visible) return@launch
+                        if (key == layerKey) {
+                            diagnostics.count(settingsCache.debugDiagnostics, "layer_reused")
+                            layer?.apply {
+                                slide = slide.copy(mode = slideMode, speedPxPerSecond = speed)
+                                crossfadeDurationMs = duration
+                            }
+                            if (album?.crossfadeEnabled == false) finishFade()
+                            updateSlideTicker()
+                            updateGyroSubscription()
+                            draw()
+                            return@launch
+                        }
+                        val scroll = ScrollGeometry.scrollFor(framing, width)
+                        diagnostics.count(settingsCache.debugDiagnostics, "layer_decode_requested")
+                        source = bitmapLoader.decode(
+                            asset, (width + scroll.slackPixels).coerceAtMost(DECODE_MAX_DIMENSION),
+                            height.coerceAtMost(DECODE_MAX_DIMENSION),
+                        ) ?: run {
+                            settingsStore.setLastError("Image could not be decoded")
+                            return@launch
+                        }
+                        finishFade()
+                        var backdrop: Bitmap? = null
+                        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Default) {
+                            rotated = backgroundRenderer.rotated(requireNotNull(source), framing.rotationDegrees)
+                            backdrop = backgroundRenderer.prepareBackdrop(requireNotNull(rotated), framing)
+                        }
+                        if (rotated !== source) {
+                            source?.recycle()
+                            source = rotated
+                        }
+                        if (requestGeneration != generation ||
+                            renderIsStale(
+                                width,
+                                height,
+                                target,
+                                surface,
+                            )
+                        ) {
+                            return@launch
+                        }
+                        val next =
+                            Layer(
+                                requireNotNull(source), requireNotNull(rotated), framing, scroll, scrolls, dim,
+                                SlideSettings(slideMode, speed, SystemClock.elapsedRealtime()), backdrop,
+                            )
+                        next.crossfadeDurationMs = duration
+                        val old = layer
+                        layerKey = key
                         lastTranslation = -1
                         lastMotionKey = null
+                        lastFadeStep = -1
+                        finishFade()
+                        layer = next
+                        installed = true
+                        if (album?.crossfadeEnabled != false && old != null && visible) {
+                            previousLayer = old
+                            startFade()
+                        } else {
+                            old?.recycle()
+                            fade = 1f
+                        }
                         updateSlideTicker()
+                        updateGyroSubscription()
                         draw()
-                        return@post
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: OutOfMemoryError) {
+                        settingsStore.setLastError("Image memory allocation failed: ${failure.message}")
+                    } catch (failure: Exception) {
+                        settingsStore.setLastError("Image could not be displayed: ${failure.message}")
+                    } finally {
+                        if (!installed) recyclePrepared(source, rotated)
+                        rendering = false
+                        if (alive && visible && dirty) loadIfNeeded()
                     }
-                    layerKey = key
-                    val newLayer =
-                        Layer(
-                            source = source,
-                            rotated = rotated ?: source,
-                            framing = framing,
-                            scroll = scroll,
-                            scrolls = scrolls,
-                            dim = dim,
-                            slide = SlideSettings(slideMode, slideSpeed, wallpaper.changedAt),
-                        )
-                    newLayer.crossfadeDurationMs = crossfadeDurationMs
-                    val old = layer
-                    lastTranslation = -1
-                    lastFadeStep = -1
-                    lastMotionKey = null
-                    if (crossfadeEnabled && old != null && visible) {
-                        previousLayer?.recycle()
-                        previousLayer = old
-                        layer = newLayer
-                        startFade()
-                    } else {
-                        old?.recycle()
-                        previousLayer?.recycle()
-                        previousLayer = null
-                        layer = newLayer
-                        fade = 1f
-                    }
-                    updateSlideTicker()
-                    draw()
-                    updateGyroSubscription()
-                    if (dirty) loadIfNeeded()
                 }
-            }
-        }
-
-        private fun prepareRotated(
-            source: Bitmap?,
-            framing: Framing?,
-        ): Bitmap? {
-            if (source == null || framing == null) return null
-            return backgroundRenderer.rotated(source, framing.rotationDegrees).also {
-                backgroundRenderer.prepareBackdrop(it, framing)
-            }
         }
 
         private fun recyclePrepared(
@@ -553,7 +714,13 @@ class BackgroundedWallpaperService : WallpaperService() {
             target: DisplayTarget,
             surface: WallpaperSurface,
         ): Boolean {
-            if (dirty || width != surfaceWidth || height != surfaceHeight) return true
+            if (!alive || !visible || !surfaceAvailable) return true
+            if (dirty ||
+                width != surfaceWidth ||
+                height != surfaceHeight
+            ) {
+                return true
+            }
             return target != displayTarget || surface != resolveSurface()
         }
 
@@ -575,42 +742,17 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
 
         private fun startFade() {
-            val interrupted = fadeAnimator
-            fadeAnimator = null
-            interrupted?.cancel()
+            fadeStartedAt = SystemClock.elapsedRealtime()
+            fadeDuration = (layer?.crossfadeDurationMs ?: 800).toLong().coerceIn(MIN_FADE_MILLIS, MAX_FADE_MILLIS)
             fade = 0f
-            val animator = ValueAnimator.ofFloat(0f, 1f)
-            fadeAnimator = animator
-            animator.apply {
-                duration = (layer?.crossfadeDurationMs ?: 800).toLong().coerceIn(MIN_FADE_MILLIS, MAX_FADE_MILLIS)
-                addUpdateListener { animator ->
-                    fade = animator.animatedValue as Float
-                    draw()
-                }
-                addListener(
-                    object : AnimatorListenerAdapter() {
-                        override fun onAnimationEnd(animation: android.animation.Animator) {
-                            if (fadeAnimator !== animation) {
-                                return
-                            }
-                            fadeAnimator = null
-                            previousLayer?.recycle()
-                            previousLayer = null
-                            fade = 1f
-                            lastFadeStep = -1
-                            draw()
-                        }
-                    },
-                )
-                start()
-            }
+            draw()
         }
 
         @Suppress("CyclomaticComplexMethod", "ComplexCondition")
-        private fun draw() {
+        private fun drawNow() {
             val current = layer
             if (current == null || !visible) return
-            val now = System.currentTimeMillis()
+            val now = SystemClock.elapsedRealtime()
             val motion = motionFor(current, now)
             val motionKey =
                 motion?.let {
@@ -644,6 +786,7 @@ class BackgroundedWallpaperService : WallpaperService() {
             lastMotionKey = motionKey
             lastGyroKeyX = gyroKeyX
             lastGyroKeyY = gyroKeyY
+            diagnostics.count(settingsCache.debugDiagnostics, "wallpaper_drawn")
             try {
                 canvas.drawColor(Color.BLACK)
                 val previous = previousLayer
@@ -663,8 +806,6 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
 
         private fun finishFade() {
-            fadeAnimator?.cancel()
-            fadeAnimator = null
             previousLayer?.recycle()
             previousLayer = null
             fade = 1f
@@ -684,13 +825,11 @@ class BackgroundedWallpaperService : WallpaperService() {
             )
 
         private fun slideFrameDelay(): Long =
-            (500f / (layer?.slide?.speedPxPerSecond ?: DEFAULT_SLIDE_SPEED)).toLong().coerceIn(16L, 1_000L)
+            (500f / (layer?.slide?.speedPxPerSecond ?: DEFAULT_SLIDE_SPEED)).toLong()
+                .coerceIn((1000L + settingsCache.animationFps - 1) / settingsCache.animationFps, 1_000L)
 
         private fun updateSlideTicker() {
-            mainHandler.removeCallbacks(slideTick)
-            if (visible && layer?.slide?.mode?.let { it != SlideMode.OFF } == true) {
-                mainHandler.postDelayed(slideTick, slideFrameDelay())
-            }
+            if (visible && layer?.slide?.mode?.let { it != SlideMode.OFF } == true) draw()
         }
 
         private fun drawLayer(
@@ -712,6 +851,7 @@ class BackgroundedWallpaperService : WallpaperService() {
             val intensity = layer.framing.gyroIntensity.coerceIn(0, 100) / 100f
             val maxShift = intensity * GYRO_MAX_FRACTION * min(surfaceWidth, surfaceHeight)
             val parallax = layer.framing.gyroParallax
+            canvas.drawColor(Color.BLACK)
             backgroundRenderer.draw(
                 canvas = canvas,
                 rotatedSource = layer.rotated,
@@ -728,15 +868,13 @@ class BackgroundedWallpaperService : WallpaperService() {
                         gyroShiftY = if (parallax) gyroY * maxShift else 0f,
                         gyroMargin = if (parallax) maxShift else 0f,
                         slide = slide,
+                        preparedBackdrop = layer.backdrop,
                     ),
             )
             if (alpha < 1f) canvas.restore()
         }
 
         private fun releaseLayers() {
-            mainHandler.removeCallbacks(slideTick)
-            fadeAnimator?.cancel()
-            fadeAnimator = null
             if (gyroRegistered) {
                 sensorManager?.unregisterListener(gyroListener)
                 gyroRegistered = false
@@ -750,6 +888,7 @@ class BackgroundedWallpaperService : WallpaperService() {
         }
     }
 
+    @Suppress("LongParameterList")
     private class Layer(
         val source: Bitmap,
         val rotated: Bitmap,
@@ -758,6 +897,7 @@ class BackgroundedWallpaperService : WallpaperService() {
         val scrolls: Boolean,
         val dim: Boolean,
         var slide: SlideSettings,
+        val backdrop: Bitmap?,
     ) {
         var crossfadeDurationMs: Int = 800
 
@@ -768,10 +908,14 @@ class BackgroundedWallpaperService : WallpaperService() {
     }
 
     private data class LayerKey(
+        val assetId: Long,
+        val revision: String?,
         val reference: String,
         val framing: Framing,
         val scrolls: Boolean,
         val dim: Boolean,
+        val target: DisplayTarget,
+        val surface: WallpaperSurface,
         val width: Int,
         val height: Int,
     )

@@ -19,6 +19,7 @@ class ManagedFolderStore
         private val preferences = context.getSharedPreferences("managed_folders", Context.MODE_PRIVATE)
         private val mutableFolders = MutableStateFlow(preferences.getStringSet("uris", emptySet()).orEmpty())
         val folders: StateFlow<Set<String>> = mutableFolders.asStateFlow()
+        val changes = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
         fun grant(uri: Uri): Boolean {
             val granted =
@@ -31,6 +32,7 @@ class ManagedFolderStore
             if (!granted) return false
             mutableFolders.value = mutableFolders.value + uri.toString()
             persist()
+            changes.tryEmit(Unit)
             return true
         }
 
@@ -43,6 +45,7 @@ class ManagedFolderStore
             }
             mutableFolders.value = mutableFolders.value - uri.toString()
             persist()
+            changes.tryEmit(Unit)
         }
 
         fun hasWrite(uri: Uri): Boolean =

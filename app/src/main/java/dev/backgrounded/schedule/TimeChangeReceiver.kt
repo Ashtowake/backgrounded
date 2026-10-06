@@ -25,7 +25,7 @@ class TimeChangeReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         applicationScope.launch {
             try {
-                changeScheduler.rearm()
+                changeScheduler.rearm(forceClock = true)
             } finally {
                 pendingResult.finish()
             }

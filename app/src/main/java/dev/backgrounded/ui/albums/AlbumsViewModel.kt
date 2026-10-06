@@ -14,10 +14,10 @@ import dev.backgrounded.domain.model.Album
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.rotation.AlbumSwitchMode
+import dev.backgrounded.domain.rotation.RotationResult
 import dev.backgrounded.domain.usecase.ApplyNextBackground
 import dev.backgrounded.domain.usecase.ApplyPreviousBackground
 import dev.backgrounded.domain.usecase.NextAlbum
-import dev.backgrounded.domain.usecase.NextAlbumResult
 import dev.backgrounded.domain.usecase.TogglePause
 import dev.backgrounded.widget.WidgetUpdater
 import kotlinx.coroutines.flow.Flow
@@ -145,8 +145,7 @@ class AlbumsViewModel
                 ) {
                     return@launch
                 }
-                settingsStore.setActiveAlbum(albumId)
-                widgetUpdater.refreshAll()
+                applyNextBackground(Trigger.MANUAL, albumIdOverride = albumId)
             }
         }
 
@@ -262,19 +261,19 @@ class AlbumsViewModel
         fun advanceAlbum(
             mode: AlbumSwitchMode = AlbumSwitchMode.NEXT,
             trigger: Trigger = Trigger.MANUAL,
-            onAuthenticationRequired: () -> Unit,
+            onAuthenticationRequired: (Long) -> Unit,
         ) = viewModelScope.launch {
-            if (nextAlbum(trigger, authenticated = state.value.hiddenRevealed, mode = mode) ==
-                NextAlbumResult.AUTH_REQUIRED
-            ) {
-                onAuthenticationRequired()
-            }
+            val selection = nextAlbum(trigger, authenticated = state.value.hiddenRevealed, mode = mode)
+            if (selection is RotationResult.AuthenticationRequired) onAuthenticationRequired(selection.albumId)
         }
 
         fun advanceAlbumAuthorized(
             trigger: Trigger,
             mode: AlbumSwitchMode,
-        ) = viewModelScope.launch { nextAlbum(trigger, authenticated = true, mode = mode) }
+            targetAlbumId: Long,
+        ) = viewModelScope.launch {
+            nextAlbum(trigger, authenticated = true, mode = mode, targetAlbumId = targetAlbumId)
+        }
 
         fun togglePause() = viewModelScope.launch { togglePauseUseCase() }
 
@@ -300,12 +299,12 @@ class AlbumsViewModel
 
         fun pinRecoveryEnabled(): Boolean = pinVault.recoveryEnabled()
 
-        fun setupPin(
+        suspend fun setupPin(
             pin: String,
             recovery: Boolean,
-        ): Boolean = pinVault.setup(pin, recovery)
+        ): Boolean = pinVault.setupAsync(pin, recovery)
 
-        fun unlockPin(pin: String): Boolean = pinVault.unlock(pin)
+        suspend fun unlockPin(pin: String): Boolean = pinVault.unlockAsync(pin)
 
         fun recoverPin(): Boolean = pinVault.recover()
 

@@ -23,11 +23,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.backgrounded"
+        applicationId = providers.gradleProperty("qaApplicationId").getOrElse("dev.backgrounded")
         minSdk = 31
         targetSdk = 36
-        versionCode = 5002
-        versionName = "0.5.2"
+        versionCode = 5003
+        versionName = "0.5.3"
+        testInstrumentationRunner = "dev.backgrounded.HardeningInstrumentation"
     }
 
     signingConfigs {

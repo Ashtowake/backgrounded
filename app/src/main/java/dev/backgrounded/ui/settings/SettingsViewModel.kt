@@ -121,12 +121,12 @@ class SettingsViewModel
 
         fun pinUnlocked() = pinVault.unlocked()
 
-        fun setupPin(
+        suspend fun setupPin(
             pin: String,
             recovery: Boolean,
-        ) = pinVault.setup(pin, recovery)
+        ) = pinVault.setupAsync(pin, recovery)
 
-        fun unlockPin(pin: String) = pinVault.unlock(pin)
+        suspend fun unlockPin(pin: String) = pinVault.unlockAsync(pin)
 
         fun pinRecoveryEnabled() = pinVault.recoveryEnabled()
 
@@ -238,6 +238,10 @@ class SettingsViewModel
             }
         }
 
+        fun setAnimationFps(fps: Int) = viewModelScope.launch { settingsStore.setAnimationFps(fps) }
+
+        fun setFolderScanSeconds(seconds: Int) = viewModelScope.launch { settingsStore.setFolderScanSeconds(seconds) }
+
         fun importFrom(
             uri: Uri,
             onResult: (Boolean) -> Unit,
@@ -247,8 +251,8 @@ class SettingsViewModel
                     withContext(Dispatchers.IO) {
                         runCatching {
                             val text =
-                                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use {
-                                    it.readText()
+                                context.contentResolver.openInputStream(uri)?.use {
+                                    dev.backgrounded.data.backup.BackupValidation.read(it)
                                 } ?: return@runCatching false
                             backupManager.importJson(text)
                         }.getOrDefault(false)

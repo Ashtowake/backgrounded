@@ -14,6 +14,21 @@ import java.time.ZonedDateTime
 class ScheduleCalculatorTest {
     private val zone = ZoneId.of("Europe/Berlin")
 
+    @Test(timeout = 1000)
+    fun `decades of missed seconds use constant time arithmetic`() {
+        val now = ZonedDateTime.of(2026, 10, 6, 12, 0, 0, 0, zone)
+        val result = ScheduleCalculator.nextTrigger(now, ScheduleType.INTERVAL, null, emptyList(), 1, 1)
+        assertTrue(result!!.isAfter(now))
+        assertTrue(!result.isAfter(now.plusSeconds(1)))
+    }
+
+    @Test
+    fun `legacy minutes cannot overflow into a short interval`() {
+        val now = ZonedDateTime.of(2026, 10, 6, 12, 0, 0, 0, zone)
+        val result = ScheduleCalculator.nextTrigger(now, ScheduleType.INTERVAL, Int.MAX_VALUE, emptyList(), 0)
+        assertEquals(now.plusSeconds(359999), result)
+    }
+
     @Test
     fun `no schedule yields null`() {
         assertNull(

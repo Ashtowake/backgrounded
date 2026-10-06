@@ -21,6 +21,12 @@ import javax.inject.Singleton
 object AppModule {
     @Provides
     @Singleton
+    fun renderer(
+        memory: dev.backgrounded.core.image.ImageMemoryBudget,
+    ): dev.backgrounded.domain.render.BackgroundRenderer = dev.backgrounded.domain.render.BackgroundRenderer(memory)
+
+    @Provides
+    @Singleton
     fun database(
         @ApplicationContext context: Context,
         settingsStore: SettingsStore,
@@ -37,6 +43,7 @@ object AppModule {
                 BackgroundedDatabase.MIGRATION_8_9,
                 BackgroundedDatabase.MIGRATION_9_10,
                 BackgroundedDatabase.MIGRATION_10_11,
+                BackgroundedDatabase.MIGRATION_12_13,
                 BackgroundedDatabase.crossfadeMigration {
                     runBlocking(Dispatchers.IO) { settingsStore.legacyCrossfade() }
                 },

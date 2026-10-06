@@ -51,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +75,7 @@ import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.rotation.AlbumSwitchMode
 import dev.backgrounded.ui.components.BackgroundThumbnail
 import dev.backgrounded.widget.PlaybackAction
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,6 +87,7 @@ fun AlbumsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val albumPreviews by viewModel.albumPreviews.collectAsStateWithLifecycle()
     val operationError by viewModel.operationError.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val cardHeight = 180.dp
     var selectionDismissed by remember(state.activeAlbumId) { mutableStateOf(false) }
@@ -112,7 +115,12 @@ fun AlbumsScreen(
                 viewModel.setHidden(action.albumId, true, action.sourceFolder, action.useFullAccess)
             is CredentialAction.Move ->
                 viewModel.moveSources(action.albumId, action.sourceFolder, action.useFullAccess)
-            is CredentialAction.SwitchAlbum -> viewModel.advanceAlbumAuthorized(action.trigger, action.mode)
+            is CredentialAction.SwitchAlbum ->
+                viewModel.advanceAlbumAuthorized(
+                    action.trigger,
+                    action.mode,
+                    action.albumId,
+                )
             is CredentialAction.SelectAlbum -> viewModel.setActive(action.albumId, authenticated = true)
         }
     }
@@ -121,20 +129,22 @@ fun AlbumsScreen(
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.StartActivityForResult(),
         ) { result ->
-            if (result.resultCode == android.app.Activity.RESULT_OK) {
-                if (pinAction != null && viewModel.pinRecoveryEnabled()) {
-                    if (viewModel.recoverPin()) pinAction?.let(executeCredentialAction)
-                    pinAction = null
-                } else if (pinAction != null && pinRecovery && !viewModel.pinConfigured()) {
-                    if (viewModel.setupPin(pinInput, true)) pinAction?.let(executeCredentialAction)
-                    pinAction = null
-                    pinInput = ""
-                    pinConfirmation = ""
-                } else {
-                    pendingAction?.let(executeCredentialAction)
+            scope.launch {
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    if (pinAction != null && viewModel.pinRecoveryEnabled()) {
+                        if (viewModel.recoverPin()) pinAction?.let(executeCredentialAction)
+                        pinAction = null
+                    } else if (pinAction != null && pinRecovery && !viewModel.pinConfigured()) {
+                        if (viewModel.setupPin(pinInput, true)) pinAction?.let(executeCredentialAction)
+                        pinAction = null
+                        pinInput = ""
+                        pinConfirmation = ""
+                    } else {
+                        pendingAction?.let(executeCredentialAction)
+                    }
                 }
+                pendingAction = null
             }
-            pendingAction = null
         }
 
     val runWithCredential: (CredentialAction) -> Unit = { action ->
@@ -226,8 +236,8 @@ fun AlbumsScreen(
                         onPrevious = viewModel::previous,
                         onNext = viewModel::next,
                         onAlbumSwitch = { mode ->
-                            viewModel.advanceAlbum(mode) {
-                                runWithCredential(CredentialAction.SwitchAlbum(mode))
+                            viewModel.advanceAlbum(mode) { albumId ->
+                                runWithCredential(CredentialAction.SwitchAlbum(mode, albumId))
                             }
                         },
                         onRandomImage = viewModel::randomImage,
@@ -525,31 +535,33 @@ fun AlbumsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val action = pinAction ?: return@TextButton
-                    if (configured) {
-                        if (viewModel.unlockPin(pinInput)) {
-                            executeCredentialAction(action)
-                            pinAction = null
-                            pinInput = ""
+                    scope.launch {
+                        val action = pinAction ?: return@launch
+                        if (configured) {
+                            if (viewModel.unlockPin(pinInput)) {
+                                executeCredentialAction(action)
+                                pinAction = null
+                                pinInput = ""
+                            } else {
+                                pinError = true
+                            }
+                        } else if (dev.backgrounded.core.security.PinVault.validPin(pinInput) &&
+                            pinInput == pinConfirmation
+                        ) {
+                            if (pinRecovery) {
+                                val intent = DeviceCredentialGate.confirmIntent(context, "Enable PIN recovery")
+                                if (intent != null) credentialLauncher.launch(intent) else pinError = true
+                            } else if (viewModel.setupPin(pinInput, false)) {
+                                executeCredentialAction(action)
+                                pinAction = null
+                                pinInput = ""
+                                pinConfirmation = ""
+                            } else {
+                                pinError = true
+                            }
                         } else {
                             pinError = true
                         }
-                    } else if (dev.backgrounded.core.security.PinVault.validPin(pinInput) &&
-                        pinInput == pinConfirmation
-                    ) {
-                        if (pinRecovery) {
-                            val intent = DeviceCredentialGate.confirmIntent(context, "Enable PIN recovery")
-                            if (intent != null) credentialLauncher.launch(intent) else pinError = true
-                        } else if (viewModel.setupPin(pinInput, false)) {
-                            executeCredentialAction(action)
-                            pinAction = null
-                            pinInput = ""
-                            pinConfirmation = ""
-                        } else {
-                            pinError = true
-                        }
-                    } else {
-                        pinError = true
                     }
                 }) { Text(if (configured) "Unlock" else "Set PIN") }
             },
@@ -725,7 +737,11 @@ private sealed interface CredentialAction {
 
     data class Move(val albumId: Long, val sourceFolder: Uri?, val useFullAccess: Boolean = false) : CredentialAction
 
-    data class SwitchAlbum(val mode: AlbumSwitchMode, val trigger: Trigger = Trigger.MANUAL) : CredentialAction
+    data class SwitchAlbum(
+        val mode: AlbumSwitchMode,
+        val albumId: Long,
+        val trigger: Trigger = Trigger.MANUAL,
+    ) : CredentialAction
 
     data class SelectAlbum(val albumId: Long) : CredentialAction
 }

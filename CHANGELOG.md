@@ -1,3 +1,18 @@
+# v0.5.3 (unreleased)
+
+- Stop wallpaper loading, animation frames, and automatic rotation while invisible; apply one overdue change on return.
+- Cancel service and engine work on destruction and reuse unchanged prepared wallpaper layers.
+- Prepare rotation and blur outside drawing, serialize image decoding, and enforce a shared image memory budget.
+- Add asynchronous composed previews, bounded caches, and temporary failure suppression.
+- Serialize playback commands with bounded queueing and recoverable Room/DataStore commits.
+- Replace wallpaper wakeup alarms with a timer owned by visible wallpaper engines.
+- Add 30/60 FPS animation ceilings and an app-wide folder discovery interval.
+- Stream folder imports and scans; retain document identities and album-scoped duplicate results.
+- Validate configuration replacements and protect encrypted assets, moved originals, and unfinished transfers.
+- Journal file operations and add authenticated encryption format v2 while preserving v1 reads.
+- Move PIN derivation off the UI thread and cap playback history.
+- Migrate Room 12 to 13 and export configuration schema 8.
+
 # v0.5.2
 
 - Add a floating widget gallery picker with composed pair and album previews, matching directory-up cards,

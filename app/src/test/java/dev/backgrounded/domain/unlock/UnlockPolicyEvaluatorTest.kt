@@ -11,6 +11,47 @@ class UnlockPolicyEvaluatorTest {
     private val policy = UnlockPolicy(enabled = true, minMinutes = 5, everyN = 1, maxPerDay = 20)
     private val fresh = UnlockState(lastAppliedAt = 0L, unlocksSinceApply = 0, appliedToday = 0, dayEpochDay = 100L)
 
+    @Test fun `unlock queued behind a timer consumes one change without another pending rotation`() {
+        val decision = UnlockPolicyEvaluator.onUnlock(policy, fresh, 1000, 100, automaticChangedAt = 1200)
+        assertFalse(decision.pending)
+        assertEquals(1200L, decision.state.lastAppliedAt)
+        assertEquals(1, decision.state.appliedToday)
+        assertEquals(0, decision.state.unlocksSinceApply)
+    }
+
+    @Test fun `combined automatic change does not count the same application twice`() {
+        val applied = fresh.copy(lastAppliedAt = 1200, appliedToday = 1)
+        val decision = UnlockPolicyEvaluator.onUnlock(policy.copy(minMinutes = 0), applied, 1000, 100, 1200)
+        assertEquals(applied, decision.state)
+        assertFalse(decision.pending)
+    }
+
+    @Test fun `a timer before an unlock does not consume the new event`() {
+        val decision = UnlockPolicyEvaluator.onUnlock(policy, fresh, 1200, 100, automaticChangedAt = 1000)
+        assertTrue(decision.pending)
+        assertEquals(1, decision.state.unlocksSinceApply)
+    }
+
+    @Test fun `ineligible unlock is counted without treating a timer as an unlock application`() {
+        val decision = UnlockPolicyEvaluator.onUnlock(policy.copy(everyN = 2), fresh, 1000, 100, 1200)
+        assertFalse(decision.pending)
+        assertEquals(1, decision.state.unlocksSinceApply)
+        assertEquals(0, decision.state.appliedToday)
+    }
+
+    @Test fun `unlock counters saturate`() {
+        val state = fresh.copy(unlocksSinceApply = Int.MAX_VALUE, appliedToday = Int.MAX_VALUE)
+        assertEquals(Int.MAX_VALUE, UnlockPolicyEvaluator.stateAfterUnlock(state, 100).unlocksSinceApply)
+        assertEquals(Int.MAX_VALUE, UnlockPolicyEvaluator.stateAfterApply(state, 1000, 100).appliedToday)
+    }
+
+    @Test fun `previous day unlock counts are not replayed on the first unlock of a new day`() {
+        val previous = fresh.copy(unlocksSinceApply = Int.MAX_VALUE)
+        val decision = UnlockPolicyEvaluator.onUnlock(policy.copy(everyN = 3), previous, 1000, 101)
+        assertFalse(decision.pending)
+        assertEquals(1, decision.state.unlocksSinceApply)
+    }
+
     @Test
     fun `disabled policy never changes`() {
         assertFalse(

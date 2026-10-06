@@ -73,7 +73,6 @@ import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.backgrounded.R
-import dev.backgrounded.data.importer.SafFolders
 import dev.backgrounded.domain.model.BackgroundPair
 import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.WallpaperSurface
@@ -100,7 +99,6 @@ fun AlbumScreen(
     val stackPreviews = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val displayTarget = viewModel.currentDisplay()
     val displayAspect = viewModel.displayAspect(displayTarget)
-    val thumbnailVersion by viewModel.thumbnailVersion.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var menuOpen by remember { mutableStateOf(false) }
     var slotRequest by remember { mutableStateOf<SlotRequest?>(null) }
@@ -149,7 +147,7 @@ fun AlbumScreen(
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
                             )
                         }
-                        viewModel.addImages(SafFolders.listImages(context, uri))
+                        viewModel.importFolder(uri)
                     }
                     FolderAction.LINK -> viewModel.linkFolder(uri)
                     FolderAction.MOVE -> viewModel.moveSelectedFromFolder(pendingSelectedUris, uri)
@@ -311,7 +309,6 @@ fun AlbumScreen(
                             displayTarget = displayTarget,
                             displayAspect = displayAspect,
                             stackPreviews = stackPreviews,
-                            thumbnailVersion = thumbnailVersion,
                             viewModel = viewModel,
                             isCover = pair.id == album?.coverPairId,
                             onOpen = { onEditPair(pair.id) },
@@ -339,7 +336,7 @@ fun AlbumScreen(
         AlertDialog(
             onDismissRequest = { showFolderChoices = false },
             title = { Text("Add folder") },
-            text = { Text("Import copies photos once. Link checks for new photos at each wallpaper change.") },
+            text = { Text("Import copies photos once. Link discovers new photos using the folder scan setting.") },
             confirmButton = {
                 TextButton(onClick = {
                     showFolderChoices = false
@@ -374,7 +371,6 @@ fun AlbumScreen(
                                     displayTarget = displayTarget,
                                     displayAspect = displayAspect,
                                     stackPreviews = stackPreviews,
-                                    thumbnailVersion = thumbnailVersion,
                                     previewImage = viewModel::preview,
                                     modifier = Modifier.width(76.dp),
                                 )
@@ -484,7 +480,6 @@ private fun PairCell(
     displayTarget: DisplayTarget,
     displayAspect: Float,
     stackPreviews: Boolean,
-    thumbnailVersion: Int,
     viewModel: AlbumViewModel,
     isCover: Boolean,
     onOpen: () -> Unit,
@@ -530,7 +525,6 @@ private fun PairCell(
             displayTarget = displayTarget,
             displayAspect = displayAspect,
             stackPreviews = stackPreviews,
-            thumbnailVersion = thumbnailVersion,
             previewImage = viewModel::preview,
         ) {
             if (isCover) {

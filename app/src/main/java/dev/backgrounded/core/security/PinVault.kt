@@ -5,6 +5,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -27,9 +31,28 @@ class PinVault
     ) {
         private val preferences = context.getSharedPreferences("hidden_vault", Context.MODE_PRIVATE)
         private val random = SecureRandom()
+        private val derivationMutex = Mutex()
+
+        suspend fun setupAsync(
+            pin: String,
+            allowRecovery: Boolean,
+        ): Boolean = withContext(Dispatchers.Default) { derivationMutex.withLock { setup(pin, allowRecovery) } }
+
+        suspend fun unlockAsync(pin: String): Boolean =
+            withContext(Dispatchers.Default) { derivationMutex.withLock { unlock(pin) } }
+
+        private val mutableUnlocked = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val unlockedState: kotlinx.coroutines.flow.StateFlow<Boolean> = mutableUnlocked
+        private val keyMonitor = Any()
 
         @Volatile
         private var unlockedKey: ByteArray? = null
+            set(value) =
+                synchronized(keyMonitor) {
+                    if (field !== value) field?.fill(0)
+                    field = value
+                    mutableUnlocked.value = value != null
+                }
 
         fun configured(): Boolean = preferences.contains("pin_cipher")
 
@@ -39,7 +62,7 @@ class PinVault
 
         fun unlocked(): Boolean = unlockedKey != null
 
-        fun key(): ByteArray? = unlockedKey?.copyOf()
+        fun key(): ByteArray? = synchronized(keyMonitor) { unlockedKey?.copyOf() }
 
         /** Create the auth-bound key before prompting so its use can consume that prompt's auth token. */
         fun prepareSystemKey(): Boolean = runCatching { systemKey() }.isSuccess
@@ -68,31 +91,44 @@ class PinVault
             return saved
         }
 
+        @Suppress("ReturnCount")
         fun setup(
             pin: String,
             allowRecovery: Boolean,
         ): Boolean {
             if (configured() || !validPin(pin)) return false
             val salt = randomBytes(SALT_SIZE)
-            val vaultKey = unlockedKey?.copyOf() ?: randomBytes(KEY_SIZE)
+            val vaultKey = key() ?: randomBytes(KEY_SIZE)
             val pinNonce = randomBytes(NONCE_SIZE)
-            val pinCipher = runCatching { wrap(pinKey(pin, salt), pinNonce, vaultKey) }.getOrNull() ?: return false
+            val pinCipher =
+                runCatching { wrap(pinKey(pin, salt), pinNonce, vaultKey) }.getOrNull() ?: run {
+                    vaultKey.fill(0)
+                    return false
+                }
             val recovery =
                 if (allowRecovery) {
-                    runCatching { wrapWithKeystore(recoveryKey(), vaultKey) }.getOrNull() ?: return false
+                    runCatching { wrapWithKeystore(recoveryKey(), vaultKey) }.getOrNull() ?: run {
+                        vaultKey.fill(0)
+                        return false
+                    }
                 } else {
                     null
                 }
-            preferences.edit()
-                .putString("salt", salt.encoded())
-                .putString("pin_nonce", pinNonce.encoded())
-                .putString("pin_cipher", pinCipher.encoded())
-                .apply {
-                    if (recovery != null) {
-                        putString("recovery_nonce", recovery.first.encoded())
-                        putString("recovery_cipher", recovery.second.encoded())
-                    }
-                }.apply()
+            val persisted =
+                preferences.edit()
+                    .putString("salt", salt.encoded())
+                    .putString("pin_nonce", pinNonce.encoded())
+                    .putString("pin_cipher", pinCipher.encoded())
+                    .apply {
+                        if (recovery != null) {
+                            putString("recovery_nonce", recovery.first.encoded())
+                            putString("recovery_cipher", recovery.second.encoded())
+                        }
+                    }.commit()
+            if (!persisted) {
+                vaultKey.fill(0)
+                return false
+            }
             unlockedKey = vaultKey
             return true
         }
@@ -109,7 +145,8 @@ class PinVault
                 preferences.edit().remove("failures").remove("retry_at").apply()
                 return true
             }
-            val failures = preferences.getInt("failures", 0) + 1
+            key?.fill(0)
+            val failures = preferences.getInt("failures", 0).coerceIn(0, Int.MAX_VALUE - 1) + 1
             val delay = if (failures < 5) 0L else (1L shl (failures - 5).coerceAtMost(8)) * 1_000L
             preferences.edit().putInt("failures", failures)
                 .putLong("retry_at", System.currentTimeMillis() + delay).apply()
@@ -122,7 +159,10 @@ class PinVault
             val nonce = preferences.getString("recovery_nonce", null)?.decoded() ?: return false
             val ciphertext = preferences.getString("recovery_cipher", null)?.decoded() ?: return false
             val key = runCatching { unwrap(recoveryKey(), nonce, ciphertext) }.getOrNull() ?: return false
-            if (key.size != KEY_SIZE) return false
+            if (key.size != KEY_SIZE) {
+                key.fill(0)
+                return false
+            }
             unlockedKey = key
             return true
         }
@@ -133,26 +173,36 @@ class PinVault
             if (!biometricConfigured()) {
                 // A PIN-only vault must be unlocked before adding another route to its key.
                 if (configured() && !unlocked()) return false
-                val vaultKey = unlockedKey?.copyOf() ?: randomBytes(KEY_SIZE)
+                val vaultKey = key() ?: randomBytes(KEY_SIZE)
                 val (nonce, ciphertext) =
-                    runCatching { wrapWithKeystore(systemKey(), vaultKey) }.getOrNull() ?: return false
-                preferences.edit()
-                    .putString("biometric_nonce", nonce.encoded())
-                    .putString("biometric_cipher", ciphertext.encoded())
-                    .apply()
+                    runCatching { wrapWithKeystore(systemKey(), vaultKey) }.getOrNull() ?: run {
+                        vaultKey.fill(0)
+                        return false
+                    }
+                val persisted =
+                    preferences.edit()
+                        .putString("biometric_nonce", nonce.encoded())
+                        .putString("biometric_cipher", ciphertext.encoded())
+                        .commit()
+                if (!persisted) {
+                    vaultKey.fill(0)
+                    return false
+                }
                 unlockedKey = vaultKey
                 return true
             }
             val nonce = preferences.getString("biometric_nonce", null)?.decoded() ?: return false
             val ciphertext = preferences.getString("biometric_cipher", null)?.decoded() ?: return false
             val key = runCatching { unwrap(systemKey(), nonce, ciphertext) }.getOrNull() ?: return false
-            if (key.size != KEY_SIZE) return false
+            if (key.size != KEY_SIZE) {
+                key.fill(0)
+                return false
+            }
             unlockedKey = key
             return true
         }
 
         fun lock() {
-            unlockedKey?.fill(0)
             unlockedKey = null
         }
 
@@ -161,13 +211,24 @@ class PinVault
             salt: ByteArray,
         ): SecretKey {
             val spec = PBEKeySpec(pin.toCharArray(), salt, KDF_ITERATIONS, KEY_SIZE * 8)
-            val derived = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-            spec.clearPassword()
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(pepperKey())
-            val combined = mac.doFinal(derived)
-            derived.fill(0)
-            return SecretKeySpec(combined, "AES")
+            val derived =
+                try {
+                    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+                } finally {
+                    spec.clearPassword()
+                }
+            try {
+                val mac = Mac.getInstance("HmacSHA256")
+                mac.init(pepperKey())
+                val combined = mac.doFinal(derived)
+                return try {
+                    SecretKeySpec(combined, "AES")
+                } finally {
+                    combined.fill(0)
+                }
+            } finally {
+                derived.fill(0)
+            }
         }
 
         private fun pepperKey(): SecretKey {

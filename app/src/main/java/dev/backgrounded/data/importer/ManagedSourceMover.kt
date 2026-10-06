@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.backgrounded.core.security.EncryptedImageStore
 import dev.backgrounded.data.db.BackgroundedDatabase
 import dev.backgrounded.data.db.ManagedSourceEntity
+import dev.backgrounded.data.db.OperationJournalEntity
 import dev.backgrounded.domain.model.SourceType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -167,6 +168,7 @@ class ManagedSourceMover
                 ManagedSourceEntity(assetId, FULL_ACCESS, source.path, source.name, originalHash, "COPY_READY_FILE")
             db.withTransaction {
                 db.managedSourceDao().upsert(record)
+                journalMove(record, source.path, privateFile.absolutePath)
                 if (imported != null) {
                     db.backgroundDao().update(
                         asset.copy(
@@ -177,9 +179,14 @@ class ManagedSourceMover
                     )
                 }
             }
-            val deleted = runCatching { source.delete() }.getOrDefault(false)
+            // Revalidate immediately before destructive work; a source may have changed during copying.
+            val deleted =
+                runCatching {
+                    source.inputStream().use(::sha256) == originalHash && source.delete()
+                }.getOrDefault(false)
             if (deleted) {
                 db.managedSourceDao().upsert(record.copy(moveState = "MOVED_FILE"))
+                db.hardeningDao().finishOperation("move-$assetId")
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(source.path), null, null)
             }
             return deleted
@@ -296,6 +303,8 @@ class ManagedSourceMover
                             if (importedSource) "COPY_READY_IMPORT" else "COPY_READY",
                         ),
                     )
+                    val pending = requireNotNull(db.managedSourceDao().get(assetId))
+                    journalMove(pending, sourceUri.toString(), privateFile.absolutePath)
                     db.backgroundDao().update(
                         if (imported != null) {
                             asset.copy(
@@ -309,7 +318,10 @@ class ManagedSourceMover
                     )
                 }
                 val deleted =
-                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, sourceUri) }
+                    runCatching {
+                        context.contentResolver.openInputStream(sourceUri)?.use(::sha256) == originalHash &&
+                            DocumentsContract.deleteDocument(context.contentResolver, sourceUri)
+                    }
                         .getOrDefault(false)
                 if (deleted) {
                     db.managedSourceDao().upsert(
@@ -323,6 +335,7 @@ class ManagedSourceMover
                         ),
                     )
                 }
+                if (deleted) db.hardeningDao().finishOperation("move-$assetId")
                 deleted
             }
 
@@ -353,6 +366,7 @@ class ManagedSourceMover
                             if (hash == record.sha256) {
                                 if (importedSource) {
                                     db.managedSourceDao().delete(record.assetId)
+                                    db.hardeningDao().finishOperation("move-${record.assetId}")
                                     true
                                 } else {
                                     runCatching { relinkOriginal(record, original) }.getOrDefault(false)
@@ -379,19 +393,43 @@ class ManagedSourceMover
             if (target.exists()) {
                 if (target.inputStream().use(::sha256) != record.sha256) return false
                 db.managedSourceDao().delete(record.assetId)
+                db.hardeningDao().finishOperation("move-${record.assetId}")
+                db.hardeningDao().finishOperation("restore-file-${record.assetId}")
                 return true
             }
             val asset = db.backgroundDao().get(record.assetId) ?: return false
             val source = File(asset.storageRef).takeIf { it.isFile } ?: return false
             if (source.inputStream().use(::sha256) != record.sha256) return false
             val parent = target.parentFile?.takeIf { it.isDirectory } ?: return false
-            val temp = File.createTempFile(".backgrounded-restore-", ".tmp", parent)
+            val pending = db.hardeningDao().operations().firstOrNull { it.id == "restore-file-${record.assetId}" }
+            val previous =
+                pending?.destinationRef?.let(::File)?.takeIf {
+                    it.parentFile?.canonicalFile == parent.canonicalFile && it.name.startsWith(".backgrounded-restore-")
+                }
+            val temp = previous?.takeIf { it.isFile } ?: File.createTempFile(".backgrounded-restore-", ".tmp", parent)
+            val operation =
+                OperationJournalEntity(
+                    "restore-file-${record.assetId}", "RESTORE_FILE", "COPYING",
+                    record.assetId, source.absolutePath, temp.absolutePath, record.sha256, null, null,
+                    System.currentTimeMillis(),
+                )
+            db.hardeningDao().recordOperation(operation)
             try {
-                source.inputStream().use { input -> temp.outputStream().use { output -> input.copyTo(output) } }
-                if (temp.inputStream().use(::sha256) != record.sha256 || target.exists() || !temp.renameTo(target)) {
+                source.inputStream().use {
+                        input ->
+                    temp.outputStream().use { output ->
+                        input.copyTo(output)
+                        output.fd.sync()
+                    }
+                }
+                if (temp.inputStream().use(::sha256) != record.sha256) return false
+                db.hardeningDao().recordOperation(operation.copy(stage = "VERIFIED"))
+                if (target.exists() || !temp.renameTo(target)) {
                     return false
                 }
                 db.managedSourceDao().delete(record.assetId)
+                db.hardeningDao().finishOperation("move-${record.assetId}")
+                db.hardeningDao().finishOperation(operation.id)
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(target.path), null, null)
                 return true
             } finally {
@@ -416,6 +454,7 @@ class ManagedSourceMover
                     ),
                 )
                 db.managedSourceDao().delete(record.assetId)
+                db.hardeningDao().finishOperation("move-${record.assetId}")
             }
             imageStore.deleteIfUnreferenced(privateFile.absolutePath, db.backgroundDao().allStorageRefs().toSet())
             return true
@@ -444,39 +483,94 @@ class ManagedSourceMover
                     name == record.originalName &&
                         context.contentResolver.openInputStream(uri)?.use(::sha256) == record.sha256
                 }
-            val created =
-                if (alreadyRestored != null) {
-                    alreadyRestored
-                } else {
-                    runCatching {
-                        DocumentsContract.createDocument(context.contentResolver, root, mime, record.originalName)
-                    }.getOrNull() ?: return false
+            val pending =
+                db.hardeningDao().operations().firstOrNull {
+                    it.kind == "RESTORE" && it.assetId == record.assetId
                 }
+            var operation = pending
+            var created = alreadyRestored ?: pending?.destinationRef?.let(Uri::parse)
+            if (created == null) {
+                val id = "restore-${java.util.UUID.randomUUID()}"
+                val temporaryName = ".backgrounded-$id.tmp"
+                created = DocumentsContract.createDocument(context.contentResolver, root, mime, temporaryName)
+                    ?: return false
+                operation =
+                    OperationJournalEntity(
+                        id, "RESTORE", "COPYING", record.assetId,
+                        source.absolutePath, created.toString(), record.sha256, null, null,
+                        System.currentTimeMillis(),
+                    )
+                db.hardeningDao().recordOperation(operation)
+            }
             if (alreadyRestored == null) {
-                val copied =
-                    runCatching {
-                        context.contentResolver.openOutputStream(created, "w")?.use { output ->
-                            source.inputStream().use { it.copyTo(output) }
-                        } ?: error("Unable to write restored file")
-                        context.contentResolver.openInputStream(created)?.use(::sha256) == record.sha256
-                    }.getOrDefault(false)
-                if (!copied) {
-                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, created) }
-                    return false
-                }
+                created = resumeRestore(
+                    record,
+                    requireNotNull(operation),
+                    source,
+                    requireNotNull(created),
+                ) ?: return false
             }
             db.withTransaction {
+                operation?.let { db.hardeningDao().finishOperation(it.id) }
                 if (!keepPrivateAsset) {
                     db.backgroundDao().update(
-                        asset.copy(sourceType = SourceType.SAF_LINK.name, storageRef = created.toString()),
+                        asset.copy(
+                            sourceType = SourceType.SAF_LINK.name,
+                            storageRef = requireNotNull(created).toString(),
+                        ),
                     )
                 }
                 db.managedSourceDao().delete(record.assetId)
+                db.hardeningDao().finishOperation("move-${record.assetId}")
             }
             if (!keepPrivateAsset) {
                 imageStore.deleteIfUnreferenced(source.absolutePath, db.backgroundDao().allStorageRefs().toSet())
             }
             return true
+        }
+
+        @Suppress("ReturnCount")
+        private suspend fun resumeRestore(
+            record: ManagedSourceEntity,
+            journal: OperationJournalEntity,
+            source: File,
+            destination: Uri,
+        ): Uri? {
+            val currentHash =
+                runCatching {
+                    context.contentResolver.openInputStream(destination)?.use(::sha256)
+                }.getOrNull()
+            if (currentHash != record.sha256) {
+                if (documentName(destination) != ".backgrounded-${journal.id}.tmp") return null
+                context.contentResolver.openOutputStream(destination, "wt")?.use { output ->
+                    source.inputStream().use { it.copyTo(output) }
+                } ?: return null
+                if (context.contentResolver.openInputStream(destination)?.use(::sha256) != record.sha256) return null
+            }
+            db.hardeningDao().recordOperation(journal.copy(stage = "VERIFIED"))
+            val published =
+                if (documentName(destination) == ".backgrounded-${journal.id}.tmp") {
+                    DocumentsContract.renameDocument(context.contentResolver, destination, record.originalName)
+                        ?: return null
+                } else {
+                    destination
+                }
+            db.hardeningDao().recordOperation(journal.copy(stage = "PUBLISHED", destinationRef = published.toString()))
+            if (context.contentResolver.openInputStream(published)?.use(::sha256) != record.sha256) return null
+            return published
+        }
+
+        private suspend fun journalMove(
+            record: ManagedSourceEntity,
+            source: String,
+            destination: String,
+        ) {
+            db.hardeningDao().recordOperation(
+                OperationJournalEntity(
+                    "move-${record.assetId}", "MOVE", "COPY_READY",
+                    record.assetId, source, destination, record.sha256, null, null, System.currentTimeMillis(),
+                ),
+            )
         }
 
         private fun sha256(input: InputStream): String {

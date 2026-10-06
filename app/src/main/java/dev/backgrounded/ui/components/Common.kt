@@ -12,6 +12,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -57,14 +58,13 @@ fun BackgroundThumbnail(
     onClick: (() -> Unit)? = null,
 ) {
     val cache = LocalThumbnailCache.current
-    val version by cache.version.collectAsStateWithLifecycle()
-    @Suppress("UNUSED_EXPRESSION")
-    version
-    val bitmap = cache.get(background, THUMBNAIL_SIZE)
+    val bitmap by remember(background.id, background.storageRef, background.sha256) {
+        cache.observe(background, THUMBNAIL_SIZE)
+    }.collectAsStateWithLifecycle()
     val content: @Composable () -> Unit = {
         if (bitmap != null) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = requireNotNull(bitmap).asImageBitmap(),
                 contentDescription = background.displayName,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),

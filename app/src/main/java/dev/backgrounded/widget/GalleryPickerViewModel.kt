@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.backgrounded.core.display.DisplayRepository
+import dev.backgrounded.core.image.ComposedPreviewCache
 import dev.backgrounded.core.image.ThumbnailCache
 import dev.backgrounded.core.security.PinVault
 import dev.backgrounded.data.datastore.SettingsStore
@@ -15,13 +16,12 @@ import dev.backgrounded.domain.model.BackgroundPair
 import dev.backgrounded.domain.model.DisplayTarget
 import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.model.WallpaperSurface
-import dev.backgrounded.domain.render.BackgroundRenderer
 import dev.backgrounded.domain.render.BitmapLoader
-import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.domain.usecase.ApplyPair
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -57,8 +57,8 @@ class GalleryPickerViewModel
         private val albumRepository: AlbumRepository,
         private val settingsStore: SettingsStore,
         private val thumbnailCache: ThumbnailCache,
+        private val previewCache: ComposedPreviewCache,
         private val displayRepository: DisplayRepository,
-        private val renderer: BackgroundRenderer,
         private val bitmapLoader: BitmapLoader,
         private val pinVault: PinVault,
         private val applyPair: ApplyPair,
@@ -69,7 +69,6 @@ class GalleryPickerViewModel
         val error = mutableError.asStateFlow()
         private val mutableApplying = MutableStateFlow(false)
         val applying = mutableApplying.asStateFlow()
-        val thumbnailVersion = thumbnailCache.version
         private val pairs =
             selected.flatMapLatest { id ->
                 id?.let(albumRepository::observeResolvedPairs) ?: flowOf(emptyList())
@@ -166,18 +165,5 @@ class GalleryPickerViewModel
             surface: WallpaperSurface,
             target: DisplayTarget,
             aspect: Float,
-        ): Bitmap? {
-            val source = thumbnailCache.get(background, 512) ?: return null
-            val framing = background.framingFor(target, surface)
-            val width = (256 * aspect).toInt().coerceAtLeast(1)
-            return renderer.renderWindow(
-                framing,
-                source,
-                BackgroundRenderer.Viewport(width, 256),
-                ScrollGeometry.scrollFor(framing, width),
-                scrollOffset = 0.5f,
-                dim = background.dimForLock && surface == WallpaperSurface.LOCK,
-                allowScroll = surface == WallpaperSurface.HOME,
-            )
-        }
+        ): StateFlow<Bitmap?> = previewCache.observe(background, surface, target, aspect)
     }

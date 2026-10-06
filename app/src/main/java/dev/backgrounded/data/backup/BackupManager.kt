@@ -141,6 +141,8 @@ data class FramingBackup(
 data class SettingsBackup(
     val activeAlbumIndex: Int? = null,
     val rotationPaused: Boolean = false,
+    val animationFps: Int = 30,
+    val folderScanSeconds: Int = 60,
     val authenticateHiddenSwitch: Boolean = true,
     val doubleTapEnabled: Boolean = true,
     val doubleTapMode: String = DoubleTapMode.BACKGROUND.name,
@@ -156,7 +158,7 @@ data class SettingsBackup(
     val widgetPinnedAlbumIndex: Int? = null,
 )
 
-private const val CURRENT_SCHEMA = 7
+private const val CURRENT_SCHEMA = 8
 
 @Singleton
 class BackupManager
@@ -187,6 +189,8 @@ class BackupManager
                                     albums.indexOfFirst { it.id == settings.activeAlbumId }
                                         .takeIf { it >= 0 },
                                 rotationPaused = settings.rotationPaused,
+                                animationFps = settings.animationFps,
+                                folderScanSeconds = settings.folderScanSeconds,
                                 authenticateHiddenSwitch = settings.authenticateHiddenSwitch,
                                 doubleTapEnabled = settings.doubleTapEnabled,
                                 doubleTapMode = settings.doubleTapMode.name,
@@ -206,12 +210,22 @@ class BackupManager
             return json.encodeToString(backup)
         }
 
-        @Suppress("LongMethod")
+        @Suppress("LongMethod", "CyclomaticComplexMethod")
         suspend fun importJson(text: String): Boolean =
             runCatching {
+                require(text.length <= BackupValidation.MAX_BYTES)
                 val backup = json.decodeFromString<BackupFile>(text)
+                BackupValidation.validate(text, backup)
                 val importedAlbumIds = mutableListOf<Long>()
                 database.withTransaction {
+                    require(database.hardeningDao().pendingOperations() == 0)
+                    require(database.hardeningDao().pendingPlayback() == null)
+                    require(database.managedSourceDao().count() == 0) { "Restore moved originals before importing" }
+                    require(
+                        database.encryptedAssetDao().count() == 0 && database.backgroundDao().encryptedCount() == 0,
+                    ) {
+                        "Decrypt hidden images before importing"
+                    }
                     database.albumDao().clear()
                     database.pairDao().clear()
                     database.backgroundDao().clear()
@@ -230,7 +244,9 @@ class BackupManager
                                     scheduleType = albumBackup.scheduleType,
                                     intervalMinutes = albumBackup.intervalMinutes,
                                     intervalSeconds =
-                                        albumBackup.intervalSeconds ?: albumBackup.intervalMinutes?.times(60),
+                                        albumBackup.intervalSeconds
+                                            ?: albumBackup.intervalMinutes?.toLong()?.times(60)
+                                                ?.coerceAtMost(359999)?.toInt(),
                                     slideMode = albumBackup.slideMode,
                                     slideSpeedPxPerSecond = albumBackup.slideSpeedPxPerSecond,
                                     crossfadeEnabled =
@@ -298,30 +314,23 @@ class BackupManager
                             ),
                         )
                     }
-                }
-                backup.settings?.let { settings ->
-                    settingsStore.setRotationPaused(settings.rotationPaused)
-                    settingsStore.setAuthenticateHiddenSwitch(settings.authenticateHiddenSwitch)
-                    settingsStore.setDoubleTap(
-                        settings.doubleTapEnabled,
-                        DoubleTapMode.from(settings.doubleTapMode),
-                        GestureAction.from(settings.doubleTapAction),
+                    database.hardeningDao().recordOperation(
+                        dev.backgrounded.data.db.OperationJournalEntity(
+                            "configuration", "CONFIG", "DATABASE_READY", null,
+                            json.encodeToString(backup.settings), importedAlbumIds.joinToString(","),
+                            null, null, null, System.currentTimeMillis(),
+                        ),
                     )
-                    settingsStore.setExternalControl(settings.externalControlEnabled)
-                    settingsStore.setWidgetConfig(
-                        iconSource = settings.widgetIconSource,
-                        iconAlpha = settings.widgetIconAlpha,
-                        backgroundAlpha = settings.widgetBackgroundAlpha,
-                        tapAction = GestureAction.from(settings.widgetTapAction),
-                        doubleTapAction = GestureAction.from(settings.widgetDoubleTapAction),
-                        pinnedAlbumId = settings.widgetPinnedAlbumIndex?.let { importedAlbumIds.getOrNull(it) },
-                    )
-                    settingsStore.setActiveAlbum(settings.activeAlbumIndex?.let { importedAlbumIds.getOrNull(it) })
-                    settingsStore.setCurrent(null, 0L)
                 }
+                settingsStore.restoreConfiguration(backup.settings, importedAlbumIds)
+                database.hardeningDao().finishOperation("configuration")
                 imageRecovery.restore()
                 true
-            }.getOrDefault(false)
+            }.getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                settingsStore.setLastError(it.message ?: "Configuration import failed")
+                false
+            }
 
         private suspend fun AlbumEntity.toBackup(): AlbumBackup {
             val pairs = database.pairDao().listForAlbum(id)

@@ -15,6 +15,28 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class BackgroundRendererBackdropTest {
     @Test
+    fun `tiny blur never recycles its aliased source`() {
+        val source = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        source.eraseColor(Color.RED)
+        val renderer = BackgroundRenderer()
+        val framing = Framing.DEFAULT.copy(backdrop = BackdropType.BLUR)
+        renderer.prepareBackdrop(source, framing)
+        org.junit.Assert.assertFalse(source.isRecycled)
+        val result =
+            renderer.renderWindow(
+                framing,
+                source,
+                BackgroundRenderer.Viewport(40, 80),
+                ScrollGeometry.scrollFor(framing, 40),
+                0f,
+                false,
+            )!!
+        assertEquals(Color.RED, result.getPixel(20, 40))
+        source.recycle()
+        result.recycle()
+    }
+
+    @Test
     fun `rotating an opaque image leaves transparent corners`() {
         val source = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
         source.eraseColor(Color.RED)

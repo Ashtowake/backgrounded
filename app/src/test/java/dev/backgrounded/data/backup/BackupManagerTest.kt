@@ -52,6 +52,48 @@ class BackupManagerTest {
             }
         }
 
+    @Test
+    fun `invalid schemas settings and unbounded values preserve existing data`() =
+        runBlocking {
+            withFixture { database, manager, _, repository ->
+                val album = repository.createAlbum("Keep")
+                for (invalid in listOf(
+                    "{}",
+                    "{\"schemaVersion\":999,\"albums\":[]}",
+                    "{\"schemaVersion\":null,\"albums\":[]}",
+                    "{\"schemaVersion\":\"unsupported\",\"albums\":[]}",
+                    "{\"albums\":[],\"settings\":{\"folderScanSeconds\":2}}",
+                    "{\"albums\":[{\"name\":\"bad\",\"intervalMinutes\":2147483647}]}",
+                )) {
+                    assertFalse(invalid, manager.importJson(invalid))
+                    assertEquals(album, database.albumDao().observeAll().first().single().id)
+                }
+            }
+        }
+
+    @Test
+    fun `managed originals block configuration replacement`() =
+        runBlocking {
+            withFixture { database, manager, _, repository ->
+                val album = repository.createAlbum("Protected")
+                val pair = repository.addPair(album, background(album))
+                val image = requireNotNull(repository.getPair(pair)).home.id
+                database.managedSourceDao().upsert(
+                    dev.backgrounded.data.db.ManagedSourceEntity(
+                        image,
+                        "tree",
+                        "document",
+                        "original.jpg",
+                        "hash",
+                        "MOVED",
+                    ),
+                )
+                assertFalse(manager.importJson("{\"albums\":[]}"))
+                assertEquals(1, database.managedSourceDao().count())
+                assertEquals(album, database.albumDao().observeAll().first().single().id)
+            }
+        }
+
     private suspend fun withFixture(
         block: suspend (BackgroundedDatabase, BackupManager, ImageRecovery, AlbumRepository) -> Unit,
     ) {
@@ -61,7 +103,13 @@ class BackupManagerTest {
             val store = ImageStore(context)
             val settings = SettingsStore(context)
             val recovery =
-                ImageRecovery(context, database, ImageImporter(context, store), ManagedFolderStore(context), settings)
+                ImageRecovery(
+                    context,
+                    database,
+                    ImageImporter(context, store, database),
+                    ManagedFolderStore(context),
+                    settings,
+                )
             block(
                 database,
                 BackupManager(context, database, settings, recovery),

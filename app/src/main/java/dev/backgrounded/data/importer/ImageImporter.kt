@@ -5,7 +5,12 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.backgrounded.data.db.BackgroundedDatabase
+import dev.backgrounded.data.db.OperationJournalEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
@@ -37,76 +42,83 @@ class ImageImporter
     constructor(
         @ApplicationContext private val context: Context,
         private val imageStore: ImageStore,
+        private val db: BackgroundedDatabase,
+        private val recovery: OperationRecovery? = null,
     ) {
+        @Suppress("TooGenericExceptionCaught", "SwallowedException")
         suspend fun importStream(
             input: InputStream,
             displayName: String,
         ): ImportedImage? =
             withContext(Dispatchers.IO) {
-                runCatching {
-                    val temp = File(imageStore.imagesDir, "copy-${UUID.randomUUID()}.tmp")
+                recovery?.recover()
+                val id = "import-${UUID.randomUUID()}"
+                val temp = File(imageStore.imagesDir, "$id.tmp")
+                var operation =
+                    OperationJournalEntity(
+                        id, "IMPORT", "COPYING", null, displayName,
+                        temp.absolutePath, null, null, null, System.currentTimeMillis(),
+                    )
+                db.hardeningDao().recordOperation(operation)
+                try {
                     val digest = MessageDigest.getInstance("SHA-256")
-                    input.use { stream -> temp.outputStream().use { copyWithDigest(stream, it, digest) } }
+                    input.use { stream ->
+                        temp.outputStream().use { output ->
+                            copyWithDigest(stream, output, digest)
+                            output.fd.sync()
+                        }
+                    }
+                    currentCoroutineContext().ensureActive()
                     val hash = digest.digest().toHex()
                     val extension =
                         displayName.substringAfterLast('.', "jpg").lowercase()
                             .takeIf { it in setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "gif") }
                             ?: "jpg"
-                    val target = File(imageStore.imagesDir, "$hash.$extension")
+                    val canonical = File(imageStore.imagesDir, "$hash.$extension")
+                    val target =
+                        if (canonical.exists() && canonical.sha256() != hash) {
+                            File(imageStore.imagesDir, "$hash-${UUID.randomUUID()}.$extension")
+                        } else {
+                            canonical
+                        }
+                    val bounds = ImageStore.readDimensions(temp)
+                    require(bounds.first > 0 && bounds.second > 0)
+                    require(temp.sha256() == hash)
+                    operation = operation.copy(stage = "VERIFIED", destinationRef = target.absolutePath, sha256 = hash)
+                    db.hardeningDao().recordOperation(operation)
                     if (target.isFile && target.sha256() == hash) {
                         temp.delete()
-                    } else if (!temp.renameTo(target)) {
-                        temp.copyTo(target, overwrite = true)
-                        temp.delete()
+                    } else {
+                        check(temp.renameTo(target)) { "Could not publish image copy" }
                     }
-                    check(target.sha256() == hash)
-                    val bounds = ImageStore.readDimensions(target)
-                    ImportedImage(target.absolutePath, hash, bounds.first, bounds.second, 0, displayName)
-                }.getOrNull()
+                    val result =
+                        ImportedImage(
+                            target.absolutePath,
+                            hash,
+                            bounds.first,
+                            bounds.second,
+                            ImageStore.readOrientationDegrees(target),
+                            displayName,
+                        )
+                    db.hardeningDao().finishOperation(id)
+                    result
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    null
+                } finally {
+                    // Keep a verified unpublished copy for recovery if publication was interrupted.
+                    if (operation.stage == "COPYING") {
+                        temp.delete()
+                        db.hardeningDao().finishOperation(id)
+                    }
+                }
             }
 
         suspend fun import(uri: Uri): ImportedImage? =
             withContext(Dispatchers.IO) {
-                runCatching {
-                    val resolver = context.contentResolver
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    val temp = File(imageStore.imagesDir, "import-${UUID.randomUUID()}.tmp")
-                    resolver.openInputStream(uri)?.use { input ->
-                        temp.outputStream().use { output -> copyWithDigest(input, output, digest) }
-                    } ?: return@runCatching null
-                    val hash = digest.digest().toHex()
-                    val extension = extensionFor(resolver.getType(uri))
-                    val target = File(imageStore.imagesDir, "$hash.$extension")
-                    val existingValid =
-                        target.isFile &&
-                            runCatching {
-                                val currentDigest = MessageDigest.getInstance("SHA-256")
-                                target.inputStream().use { input ->
-                                    val buffer = ByteArray(BUFFER_SIZE)
-                                    while (true) {
-                                        val count = input.read(buffer)
-                                        if (count < 0) break
-                                        currentDigest.update(buffer, 0, count)
-                                    }
-                                }
-                                currentDigest.digest().toHex() == hash
-                            }.getOrDefault(false)
-                    if (existingValid) {
-                        temp.delete()
-                    } else if (target.exists() || !temp.renameTo(target)) {
-                        temp.copyTo(target, overwrite = true)
-                        temp.delete()
-                    }
-                    val bounds = ImageStore.readDimensions(target)
-                    ImportedImage(
-                        filePath = target.absolutePath,
-                        sha256 = hash,
-                        width = bounds.first,
-                        height = bounds.second,
-                        orientationDegrees = ImageStore.readOrientationDegrees(target),
-                        displayName = displayName(uri) ?: target.name,
-                    )
-                }.getOrNull()
+                val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
+                importStream(input, displayName(uri) ?: "image.${extensionFor(context.contentResolver.getType(uri))}")
             }
 
         suspend fun link(uri: Uri): LinkedImage? =
@@ -145,15 +157,19 @@ class ImageImporter
                 else -> "jpg"
             }
 
-        private fun copyWithDigest(
+        private suspend fun copyWithDigest(
             input: java.io.InputStream,
             output: java.io.OutputStream,
             digest: MessageDigest,
         ) {
             val buffer = ByteArray(BUFFER_SIZE)
+            var bytes = 0L
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val read = input.read(buffer)
                 if (read < 0) break
+                bytes += read
+                require(bytes <= dev.backgrounded.core.security.EncryptedFileCodec.MAX_BYTES) { "Image exceeds 64 MiB" }
                 output.write(buffer, 0, read)
                 digest.update(buffer, 0, read)
             }
@@ -202,7 +218,7 @@ class ImageStore
         companion object {
             fun readDimensions(file: File): Pair<Int, Int> {
                 val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                android.graphics.BitmapFactory.decodeFile(file.absolutePath, options)
+                file.inputStream().use { android.graphics.BitmapFactory.decodeStream(it, null, options) }
                 return options.outWidth to options.outHeight
             }
 

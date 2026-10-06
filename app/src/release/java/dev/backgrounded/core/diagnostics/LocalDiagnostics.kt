@@ -17,5 +17,16 @@ class LocalDiagnostics
             durationMs: Long,
         ) = Unit
 
+        fun count(
+            enabled: Boolean,
+            name: String,
+        ) = Unit
+
+        fun gauge(
+            enabled: Boolean,
+            name: String,
+            value: Long,
+        ) = Unit
+
         fun export(): String = ""
     }

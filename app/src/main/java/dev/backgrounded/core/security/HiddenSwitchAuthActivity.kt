@@ -67,12 +67,14 @@ class HiddenSwitchAuthActivity : ComponentActivity() {
 
     private val credentialLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                val ready =
-                    if (recoverySetup) pinVault.setup(pin, true) else pinVault.recover()
-                if (ready) execute() else error = true
+            lifecycleScope.launch {
+                if (result.resultCode == RESULT_OK) {
+                    val ready =
+                        if (recoverySetup) pinVault.setupAsync(pin, true) else pinVault.recover()
+                    if (ready) execute() else error = true
+                }
+                recoverySetup = false
             }
-            recoverySetup = false
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,22 +119,31 @@ class HiddenSwitchAuthActivity : ComponentActivity() {
             try {
                 when (operation) {
                     HiddenSwitchOperation.REVEAL -> setResult(RESULT_OK)
-                    HiddenSwitchOperation.NEXT_ALBUM -> nextAlbum(trigger, authenticated = true)
+                    HiddenSwitchOperation.NEXT_ALBUM ->
+                        nextAlbum(
+                            trigger,
+                            authenticated = true,
+                            targetAlbumId = albumId,
+                        )
                     HiddenSwitchOperation.PREVIOUS_ALBUM ->
-                        nextAlbum(trigger, authenticated = true, mode = AlbumSwitchMode.PREVIOUS)
+                        nextAlbum(
+                            trigger,
+                            authenticated = true,
+                            mode = AlbumSwitchMode.PREVIOUS,
+                            targetAlbumId = albumId,
+                        )
                     HiddenSwitchOperation.RANDOM_ALBUM ->
-                        nextAlbum(trigger, authenticated = true, mode = AlbumSwitchMode.RANDOM)
+                        nextAlbum(trigger, authenticated = true, mode = AlbumSwitchMode.RANDOM, targetAlbumId = albumId)
                     HiddenSwitchOperation.APPLY_NEXT -> {
                         if (albumId != null) applyNextBackground(trigger, albumIdOverride = albumId)
                     }
                     HiddenSwitchOperation.APPLY_PREVIOUS -> {
                         if (albumId != null) {
-                            settingsStore.setActiveAlbum(albumId)
-                            applyPreviousBackground(trigger)
+                            applyPreviousBackground(trigger, albumIdOverride = albumId)
                         }
                     }
                     HiddenSwitchOperation.SELECT -> {
-                        if (albumId != null) settingsStore.setActiveAlbum(albumId)
+                        if (albumId != null) applyNextBackground(trigger, albumIdOverride = albumId)
                     }
                 }
             } finally {
@@ -189,28 +200,30 @@ class HiddenSwitchAuthActivity : ComponentActivity() {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (configured) {
-                        if (pinVault.unlock(pin)) execute() else error = true
-                    } else if (PinVault.validPin(pin) && pin == confirmation) {
-                        if (allowRecovery) {
-                            val intent =
-                                DeviceCredentialGate.confirmIntent(
-                                    this@HiddenSwitchAuthActivity,
-                                    "Enable PIN recovery",
-                                )
-                            if (intent != null) {
-                                recoverySetup = true
-                                credentialLauncher.launch(intent)
+                    lifecycleScope.launch {
+                        if (configured) {
+                            if (pinVault.unlockAsync(pin)) execute() else error = true
+                        } else if (PinVault.validPin(pin) && pin == confirmation) {
+                            if (allowRecovery) {
+                                val intent =
+                                    DeviceCredentialGate.confirmIntent(
+                                        this@HiddenSwitchAuthActivity,
+                                        "Enable PIN recovery",
+                                    )
+                                if (intent != null) {
+                                    recoverySetup = true
+                                    credentialLauncher.launch(intent)
+                                } else {
+                                    error = true
+                                }
+                            } else if (pinVault.setupAsync(pin, false)) {
+                                execute()
                             } else {
                                 error = true
                             }
-                        } else if (pinVault.setup(pin, false)) {
-                            execute()
                         } else {
                             error = true
                         }
-                    } else {
-                        error = true
                     }
                 }) { Text(if (configured) "Unlock" else "Set PIN") }
             },

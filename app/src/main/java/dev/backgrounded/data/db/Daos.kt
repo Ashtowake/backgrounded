@@ -57,6 +57,9 @@ interface AlbumDao {
 
 @Dao
 interface BackgroundDao {
+    @Query("SELECT COUNT(*) FROM backgrounds WHERE sourceType = 'ENCRYPTED_IMPORT'")
+    suspend fun encryptedCount(): Int
+
     @Query("SELECT * FROM backgrounds ORDER BY albumId, sortIndex, id")
     suspend fun listAll(): List<BackgroundEntity>
 
@@ -198,12 +201,21 @@ interface HistoryDao {
     @Query("DELETE FROM history WHERE appliedAt < :before")
     suspend fun prune(before: Long)
 
+    @Query("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY appliedAt DESC, id DESC LIMIT 10000)")
+    suspend fun trim()
+
+    @Query("SELECT COUNT(*) FROM history")
+    suspend fun count(): Int
+
     @Query("DELETE FROM history")
     suspend fun clear()
 }
 
 @Dao
 interface LinkedFolderDao {
+    @Query("SELECT * FROM linked_folders ORDER BY id")
+    suspend fun all(): List<LinkedFolderEntity>
+
     @Query("SELECT * FROM linked_folders WHERE albumId = :albumId ORDER BY id")
     suspend fun forAlbum(albumId: Long): List<LinkedFolderEntity>
 
@@ -225,6 +237,9 @@ interface LinkedFolderDao {
 
 @Dao
 interface ManagedSourceDao {
+    @Query("SELECT COUNT(*) FROM managed_sources")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM managed_sources WHERE assetId = :assetId")
     suspend fun get(assetId: Long): ManagedSourceEntity?
 
@@ -249,6 +264,9 @@ interface ManagedSourceDao {
 
 @Dao
 interface EncryptedAssetDao {
+    @Query("SELECT COUNT(*) FROM encrypted_assets")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM encrypted_assets WHERE assetId = :assetId")
     suspend fun get(assetId: Long): EncryptedAssetEntity?
 
@@ -257,4 +275,40 @@ interface EncryptedAssetDao {
 
     @Query("DELETE FROM encrypted_assets WHERE assetId = :assetId")
     suspend fun delete(assetId: Long)
+}
+
+@Dao
+interface HardeningDao {
+    @Query("SELECT COUNT(*) FROM operation_journal WHERE assetId = :assetId")
+    suspend fun operationsForAsset(assetId: Long): Int
+
+    @Query("SELECT * FROM scan_documents WHERE folderId = :folderId AND documentId = :documentId")
+    suspend fun document(
+        folderId: Long,
+        documentId: String,
+    ): ScanDocumentEntity?
+
+    @Upsert
+    suspend fun recordDocument(document: ScanDocumentEntity)
+
+    @Query("SELECT * FROM operation_journal")
+    suspend fun operations(): List<OperationJournalEntity>
+
+    @Upsert
+    suspend fun recordOperation(operation: OperationJournalEntity)
+
+    @Query("DELETE FROM operation_journal WHERE id = :id")
+    suspend fun finishOperation(id: String)
+
+    @Query("SELECT COUNT(*) FROM operation_journal")
+    suspend fun pendingOperations(): Int
+
+    @Upsert
+    suspend fun recordPlayback(commit: PlaybackCommitEntity)
+
+    @Query("SELECT * FROM playback_commit WHERE id = 1")
+    suspend fun pendingPlayback(): PlaybackCommitEntity?
+
+    @Query("DELETE FROM playback_commit")
+    suspend fun finishPlayback()
 }

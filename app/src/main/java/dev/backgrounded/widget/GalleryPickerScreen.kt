@@ -58,7 +58,6 @@ fun GalleryPickerScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val albumPreviews by viewModel.albumPreviews.collectAsStateWithLifecycle()
-    val thumbnailVersion by viewModel.thumbnailVersion.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val applying by viewModel.applying.collectAsStateWithLifecycle()
     val target = viewModel.activeTarget()
@@ -134,7 +133,6 @@ fun GalleryPickerScreen(
                                         target,
                                         aspect,
                                         stack,
-                                        thumbnailVersion,
                                         viewModel::preview,
                                     )
                                 }
@@ -153,7 +151,6 @@ fun GalleryPickerScreen(
                                             target,
                                             aspect,
                                             stack,
-                                            thumbnailVersion,
                                             viewModel::preview,
                                             title = album.name,
                                         )

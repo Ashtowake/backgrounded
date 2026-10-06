@@ -98,42 +98,44 @@ fun SettingsScreen(
     }
     val pinCredentialLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == android.app.Activity.RESULT_OK) {
-                val enabled = pendingEncryption
-                val authenticated =
-                    if (viewModel.pinConfigured()) {
-                        viewModel.recoverPin()
-                    } else {
-                        viewModel.setupPin(pinValue, true)
-                    }
-                if (authenticated && enabled == null) {
-                    pendingPinSetup = false
-                    pinValue = ""
-                    pinConfirm = ""
-                    if (pendingSystemSetup) {
-                        pendingSystemSetup = false
-                        authenticateSystem("Enable system authentication") { success ->
-                            if (success && !viewModel.unlockWithSystem()) {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        "Could not enable system authentication",
-                                    )
+            scope.launch {
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    val enabled = pendingEncryption
+                    val authenticated =
+                        if (viewModel.pinConfigured()) {
+                            viewModel.recoverPin()
+                        } else {
+                            viewModel.setupPin(pinValue, true)
+                        }
+                    if (authenticated && enabled == null) {
+                        pendingPinSetup = false
+                        pinValue = ""
+                        pinConfirm = ""
+                        if (pendingSystemSetup) {
+                            pendingSystemSetup = false
+                            authenticateSystem("Enable system authentication") { success ->
+                                if (success && !viewModel.unlockWithSystem()) {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            "Could not enable system authentication",
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                } else if (enabled != null && authenticated) {
-                    viewModel.setEncryptHidden(enabled) { success ->
-                        if (success) {
-                            pendingEncryption = null
-                            pinValue = ""
-                            pinConfirm = ""
-                        } else {
-                            pinError = true
+                    } else if (enabled != null && authenticated) {
+                        viewModel.setEncryptHidden(enabled) { success ->
+                            if (success) {
+                                pendingEncryption = null
+                                pinValue = ""
+                                pinConfirm = ""
+                            } else {
+                                pinError = true
+                            }
                         }
+                    } else {
+                        pinError = true
                     }
-                } else {
-                    pinError = true
                 }
             }
         }
@@ -304,6 +306,30 @@ fun SettingsScreen(
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
+
+            SectionTitle("Rendering and folder scans")
+            Text("Animation ceiling")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(30, 60).forEach { fps ->
+                    FilterChip(
+                        selected = settings.animationFps == fps,
+                        onClick = { viewModel.setAnimationFps(fps) },
+                        label = { Text("$fps FPS") },
+                    )
+                }
+            }
+            Text("Folder scan interval")
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0 to "Every rotation", 60 to "1 minute", 300 to "5 minutes", 900 to "15 minutes").forEach {
+                        (seconds, label) ->
+                    FilterChip(
+                        selected = settings.folderScanSeconds == seconds,
+                        onClick = { viewModel.setFolderScanSeconds(seconds) },
+                        label = { Text(label) },
+                    )
+                }
+            }
+            Text("Shorter intervals increase battery consumption.")
 
             SectionTitle(stringResource(R.string.history))
             TextButton(onClick = onOpenHistory) {
@@ -558,50 +584,52 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val authenticated =
-                        if (viewModel.pinConfigured()) {
-                            viewModel.unlockPin(pinValue)
-                        } else if (pinValue == pinConfirm) {
-                            if (pinRecovery) {
-                                val intent = DeviceCredentialGate.confirmIntent(context, "Enable PIN recovery")
-                                if (intent != null) pinCredentialLauncher.launch(intent) else pinError = true
-                                false
+                    scope.launch {
+                        val authenticated =
+                            if (viewModel.pinConfigured()) {
+                                viewModel.unlockPin(pinValue)
+                            } else if (pinValue == pinConfirm) {
+                                if (pinRecovery) {
+                                    val intent = DeviceCredentialGate.confirmIntent(context, "Enable PIN recovery")
+                                    if (intent != null) pinCredentialLauncher.launch(intent) else pinError = true
+                                    false
+                                } else {
+                                    viewModel.setupPin(pinValue, false)
+                                }
                             } else {
-                                viewModel.setupPin(pinValue, false)
+                                false
                             }
-                        } else {
-                            false
-                        }
-                    if (authenticated) {
-                        if (pendingPinSetup) {
-                            pendingPinSetup = false
-                            pinValue = ""
-                            pinConfirm = ""
-                        } else if (pendingSystemSetup) {
-                            pendingSystemSetup = false
-                            pinValue = ""
-                            authenticateSystem("Enable system authentication") { success ->
-                                if (success && !viewModel.unlockWithSystem()) {
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            "Could not enable system authentication",
-                                        )
+                        if (authenticated) {
+                            if (pendingPinSetup) {
+                                pendingPinSetup = false
+                                pinValue = ""
+                                pinConfirm = ""
+                            } else if (pendingSystemSetup) {
+                                pendingSystemSetup = false
+                                pinValue = ""
+                                authenticateSystem("Enable system authentication") { success ->
+                                    if (success && !viewModel.unlockWithSystem()) {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                "Could not enable system authentication",
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                viewModel.setEncryptHidden(enabled) { success ->
+                                    if (success) {
+                                        pendingEncryption = null
+                                        pinValue = ""
+                                        pinConfirm = ""
+                                    } else {
+                                        pinError = true
                                     }
                                 }
                             }
-                        } else {
-                            viewModel.setEncryptHidden(enabled) { success ->
-                                if (success) {
-                                    pendingEncryption = null
-                                    pinValue = ""
-                                    pinConfirm = ""
-                                } else {
-                                    pinError = true
-                                }
-                            }
+                        } else if (!pinRecovery || viewModel.pinConfigured()) {
+                            pinError = true
                         }
-                    } else if (!pinRecovery || viewModel.pinConfigured()) {
-                        pinError = true
                     }
                 }) { Text("Continue") }
             },

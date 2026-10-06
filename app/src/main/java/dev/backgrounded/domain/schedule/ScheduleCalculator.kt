@@ -1,7 +1,6 @@
 package dev.backgrounded.domain.schedule
 
 import dev.backgrounded.domain.model.ScheduleType
-import java.time.Instant
 import java.time.LocalTime
 import java.time.ZonedDateTime
 
@@ -17,7 +16,13 @@ object ScheduleCalculator {
         when (type) {
             ScheduleType.NONE -> null
             ScheduleType.INTERVAL ->
-                nextInterval(now, intervalSeconds ?: intervalMinutes?.times(60), lastChangedAtMillis)
+                nextInterval(
+                    now,
+                    intervalSeconds
+                        ?: intervalMinutes?.toLong()?.times(60)
+                            ?.coerceIn(1L, MAX_INTERVAL_SECONDS.toLong())?.toInt(),
+                    lastChangedAtMillis,
+                )
             ScheduleType.FIXED_TIMES -> nextFixedTime(now, fixedTimes)
         }
 
@@ -26,16 +31,13 @@ object ScheduleCalculator {
         intervalSeconds: Int?,
         lastChangedAtMillis: Long,
     ): ZonedDateTime? {
-        val seconds = (intervalSeconds ?: 0).coerceAtLeast(MIN_INTERVAL_SECONDS).toLong()
-        var candidate =
-            if (lastChangedAtMillis > 0L) {
-                Instant.ofEpochMilli(lastChangedAtMillis).atZone(now.zone).plusSeconds(seconds)
-            } else {
-                now.plusSeconds(seconds)
-            }
-        while (!candidate.isAfter(now)) {
-            candidate = candidate.plusSeconds(seconds)
-        }
+        val seconds = (intervalSeconds ?: 0).coerceIn(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS).toLong()
+        val intervalMillis = seconds * 1000L
+        val nowMillis = now.toInstant().toEpochMilli()
+        if (lastChangedAtMillis <= 0L || lastChangedAtMillis > nowMillis) return now.plusSeconds(seconds)
+        val elapsed = nowMillis - lastChangedAtMillis
+        val remaining = intervalMillis - elapsed % intervalMillis
+        val candidate = now.plusNanos(remaining * 1_000_000L)
         return candidate
     }
 
@@ -53,6 +55,7 @@ object ScheduleCalculator {
         return now.plusDays(1).toLocalDate().atTime(sorted.first()).atZone(now.zone)
     }
 
+    const val MAX_INTERVAL_SECONDS = 359_999
     const val MIN_INTERVAL_MINUTES = 1
     const val MIN_INTERVAL_SECONDS = 1
 }

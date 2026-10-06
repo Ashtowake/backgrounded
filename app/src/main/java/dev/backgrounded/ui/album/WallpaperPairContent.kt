@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.backgrounded.R
 import dev.backgrounded.domain.model.Background
 import dev.backgrounded.domain.model.BackgroundPair
@@ -33,8 +35,12 @@ fun WallpaperPairContent(
     displayTarget: DisplayTarget,
     displayAspect: Float,
     stackPreviews: Boolean,
-    thumbnailVersion: Int,
-    previewImage: (Background, WallpaperSurface, DisplayTarget, Float) -> android.graphics.Bitmap?,
+    previewImage: (
+        Background,
+        WallpaperSurface,
+        DisplayTarget,
+        Float,
+    ) -> kotlinx.coroutines.flow.StateFlow<android.graphics.Bitmap?>,
     title: String = "$number. ${pair.home.displayName}",
     actions: @Composable () -> Unit = {},
 ) {
@@ -44,7 +50,6 @@ fun WallpaperPairContent(
             displayTarget,
             displayAspect,
             stackPreviews,
-            thumbnailVersion,
             previewImage,
             Modifier.fillMaxWidth(),
         )
@@ -70,8 +75,12 @@ fun PairThumbnails(
     displayTarget: DisplayTarget,
     displayAspect: Float,
     stackPreviews: Boolean,
-    thumbnailVersion: Int,
-    previewImage: (Background, WallpaperSurface, DisplayTarget, Float) -> android.graphics.Bitmap?,
+    previewImage: (
+        Background,
+        WallpaperSurface,
+        DisplayTarget,
+        Float,
+    ) -> kotlinx.coroutines.flow.StateFlow<android.graphics.Bitmap?>,
     modifier: Modifier,
 ) {
     val thumbnails: @Composable (Modifier) -> Unit = { thumbnailModifier ->
@@ -81,7 +90,6 @@ fun PairThumbnails(
                 surface = surface,
                 displayTarget = displayTarget,
                 displayAspect = displayAspect,
-                thumbnailVersion = thumbnailVersion,
                 previewImage = previewImage,
                 modifier = thumbnailModifier,
             )
@@ -104,28 +112,30 @@ private fun SlotThumbnail(
     surface: WallpaperSurface,
     displayTarget: DisplayTarget,
     displayAspect: Float,
-    thumbnailVersion: Int,
-    previewImage: (Background, WallpaperSurface, DisplayTarget, Float) -> android.graphics.Bitmap?,
+    previewImage: (
+        Background,
+        WallpaperSurface,
+        DisplayTarget,
+        Float,
+    ) -> kotlinx.coroutines.flow.StateFlow<android.graphics.Bitmap?>,
     modifier: Modifier = Modifier,
 ) {
     val framing = background.framingFor(displayTarget, surface)
-    val preview =
+    val preview by
         remember(
-            background.id,
-            background.storageRef,
+            background,
             framing,
             background.dimForLock,
             surface,
             displayTarget,
             displayAspect,
-            thumbnailVersion,
         ) {
             previewImage(background, surface, displayTarget, displayAspect)
-        }
+        }.collectAsStateWithLifecycle()
     Box(modifier = modifier.aspectRatio(displayAspect)) {
         if (preview != null) {
             Image(
-                bitmap = preview.asImageBitmap(),
+                bitmap = requireNotNull(preview).asImageBitmap(),
                 contentDescription = background.displayName,
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize(),

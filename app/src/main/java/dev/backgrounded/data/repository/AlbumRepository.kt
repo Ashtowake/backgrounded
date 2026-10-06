@@ -155,6 +155,14 @@ class AlbumRepository
         suspend fun firstVisibleAlbumId(): Long? =
             observeAlbums().first().firstOrNull { !it.isHidden && it.rotationEnabled }?.id
 
+        suspend fun latestAutomaticChange(
+            albumId: Long,
+            changedAt: Long,
+        ): Long? =
+            db.historyDao().recentForAlbum(albumId, 1).firstOrNull()?.takeIf {
+                it.appliedAt == changedAt && it.trigger in setOf("TIMER", "UNLOCK")
+            }?.appliedAt
+
         suspend fun createAlbum(name: String): Long {
             val entity =
                 AlbumEntity(
@@ -329,7 +337,11 @@ class AlbumRepository
                     WallpaperSurface.HOME -> pair.homeBackgroundId
                     WallpaperSurface.LOCK -> pair.lockBackgroundId
                 }
-            if (db.managedSourceDao().get(oldAssetId) != null) return false
+            if (db.managedSourceDao().get(oldAssetId) != null ||
+                db.hardeningDao().operationsForAsset(oldAssetId) > 0
+            ) {
+                return false
+            }
             val assetId = insertAsset(pair.albumId, image)
             db.pairDao().update(
                 when (surface) {
@@ -354,7 +366,7 @@ class AlbumRepository
         suspend fun deletePair(pairId: Long): Boolean {
             val pair = db.pairDao().get(pairId) ?: return false
             if (listOf(pair.homeBackgroundId, pair.lockBackgroundId).any {
-                    db.managedSourceDao().get(it) != null
+                    db.managedSourceDao().get(it) != null || db.hardeningDao().operationsForAsset(it) > 0
                 }
             ) {
                 return false
@@ -372,7 +384,9 @@ class AlbumRepository
 
         suspend fun deleteAlbum(id: Long): Boolean {
             if (db.managedSourceDao().forAlbum(id).isNotEmpty()) return false
-            val refs = db.backgroundDao().listForAlbum(id).map { it.storageRef }.distinct()
+            val assets = db.backgroundDao().listForAlbum(id)
+            if (assets.any { db.hardeningDao().operationsForAsset(it.id) > 0 }) return false
+            val refs = assets.map { it.storageRef }.distinct()
             db.albumDao().deleteById(id)
             val referenced = db.backgroundDao().allStorageRefs().toSet()
             refs.forEach { ref -> imageStore.deleteIfUnreferenced(ref, referenced) }
@@ -406,7 +420,11 @@ class AlbumRepository
 
         private suspend fun deleteAssetIfUnreferenced(assetId: Long) {
             if (db.pairDao().countForBackground(assetId) > 0) return
-            if (db.managedSourceDao().get(assetId) != null) return
+            if (db.managedSourceDao().get(assetId) != null ||
+                db.hardeningDao().operationsForAsset(assetId) > 0
+            ) {
+                return
+            }
             val asset = db.backgroundDao().get(assetId) ?: return
             val album = db.albumDao().get(asset.albumId)
             if (album?.fixedHomeAssetId == assetId || album?.fixedLockAssetId == assetId) return

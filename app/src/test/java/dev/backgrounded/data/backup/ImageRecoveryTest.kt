@@ -40,7 +40,7 @@ class ImageRecoveryTest {
                     ImageRecovery(
                         context,
                         database,
-                        ImageImporter(context, store),
+                        ImageImporter(context, store, database),
                         ManagedFolderStore(context),
                         SettingsStore(context),
                     )
@@ -84,7 +84,7 @@ class ImageRecoveryTest {
                     ImageRecovery(
                         context,
                         database,
-                        ImageImporter(context, store),
+                        ImageImporter(context, store, database),
                         ManagedFolderStore(context),
                         SettingsStore(context),
                     )
