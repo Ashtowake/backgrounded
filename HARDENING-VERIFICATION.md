@@ -2,20 +2,25 @@
 
 ## Build gates
 
-Latest completed run: 122 unit tests, 12 primary native checks and one revoked-access native check;
+Latest completed run: 126 unit tests; earlier device runs passed 12 primary native checks and one revoked-access check;
 ktlint, detekt, debug/release lint and signed release assembly passed.
 
-Signed candidate SHA-256: `c7148bf39e4a0fc82d0b06a7fbeab703f16735963dad59ee951dc455f525e3a0`.
-The follow-up candidate is installed on the tablet, preserving production data; no app or Room crash
-was found after launch. The Pixel retains the preceding candidate
-(`34addf31f32ca86e8672567da8e410a3050c5a11c4e006801061c1839ac27b61`).
+Signed candidate SHA-256: `26187da65c54393620edfee9995af14a6c8bab1cd816c02711312a9891c93929`.
+The frame-pacing candidate is installed on the Pixel, preserving production data; no app or Room crash
+was found after launch. The tablet retains the preceding candidate
+(`c7148bf39e4a0fc82d0b06a7fbeab703f16735963dad59ee951dc455f525e3a0`).
 Both candidates use version code 5003 and version name 0.5.3.
 
 The follow-up changes use a 15-minute scan default when no preference is saved, retain saved scan choices,
 check cancellation before rotation and between preparation stages, and remove only the outer canvas clear.
 The per-layer black fill remains inside crossfade compositing. All 122 unit tests, ktlint, detekt,
 debug/release lint, signing, permission and release-diagnostics checks passed again.
-Pixel validation of this follow-up and visual Fit/background crossfade checks remain for release preparation.
+The frame-pacing follow-up anchors deadlines to display timestamps, wakes before the target vsync,
+and checks deadlines in the callback. It removes upward millisecond rounding and render-time drift.
+Four new regression tests cover consecutive 60 FPS frames, 30 FPS on 60 Hz, 60 FPS on 120 Hz,
+and adaptive slide deadlines. The complete 126-test suite and all build gates passed in a fresh,
+single-worker Gradle run after an internal Kotlin FIR crash in lint's parallel test analysis.
+On-device animation smoothness and visual Fit/background crossfade checks remain for release preparation.
 
 Run from the project root, with Gradle's user home on D:
 

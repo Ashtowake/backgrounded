@@ -43,6 +43,7 @@ import dev.backgrounded.domain.model.Trigger
 import dev.backgrounded.domain.model.WallpaperSurface
 import dev.backgrounded.domain.render.BackgroundRenderer
 import dev.backgrounded.domain.render.BitmapLoader
+import dev.backgrounded.domain.render.FrameTiming
 import dev.backgrounded.domain.render.ScrollGeometry
 import dev.backgrounded.domain.render.SlideMotion
 import dev.backgrounded.domain.rotation.RotationResult
@@ -330,6 +331,10 @@ class BackgroundedWallpaperService : WallpaperService() {
             Choreographer.FrameCallback { nanos ->
                 frameScheduled = false
                 if (alive && visible && surfaceAvailable) {
+                    if (!FrameTiming.due(nanos, scheduledAtNanos)) {
+                        postFrame()
+                        return@FrameCallback
+                    }
                     val now = SystemClock.elapsedRealtime()
                     if (previousLayer != null) {
                         fade = ((now - fadeStartedAt).toFloat() / fadeDuration).coerceIn(0f, 1f)
@@ -339,21 +344,29 @@ class BackgroundedWallpaperService : WallpaperService() {
                     lastFrameNanos = nanos
                     val moving = layer?.slide?.mode?.let { it != SlideMode.OFF } == true
                     if (previousLayer != null || moving) {
-                        scheduleFrame(if (previousLayer != null) 0L else slideFrameDelay())
+                        scheduleFrame(if (previousLayer != null) 0L else slideFrameIntervalNanos())
                     }
                 }
             }
 
-        private fun scheduleFrame(delayMillis: Long = 0L) {
+        private fun scheduleFrame(motionIntervalNanos: Long = 0L) {
             if (!alive || !visible || !surfaceAvailable) return
             val now = System.nanoTime()
-            val interval = 1_000_000_000L / settingsCache.animationFps
-            val at = maxOf(now + delayMillis * 1_000_000L, lastFrameNanos + interval)
+            val at = FrameTiming.deadline(now, lastFrameNanos, settingsCache.animationFps, motionIntervalNanos)
             if (frameScheduled && at >= scheduledAtNanos) return
             if (frameScheduled) Choreographer.getInstance().removeFrameCallback(frameCallback)
-            frameScheduled = true
             scheduledAtNanos = at
-            val delay = ((at - now).coerceAtLeast(0) + 999999) / 1_000_000L
+            postFrame()
+        }
+
+        private fun postFrame() {
+            frameScheduled = true
+            val delay =
+                FrameTiming.wakeDelayMillis(
+                    System.nanoTime(),
+                    scheduledAtNanos,
+                    displayContext?.display?.refreshRate ?: 60f,
+                )
             diagnostics.count(settingsCache.debugDiagnostics, "frame_posted")
             Choreographer.getInstance().postFrameCallbackDelayed(frameCallback, delay)
         }
@@ -827,9 +840,9 @@ class BackgroundedWallpaperService : WallpaperService() {
                 height = surfaceHeight,
             )
 
-        private fun slideFrameDelay(): Long =
-            (500f / (layer?.slide?.speedPxPerSecond ?: DEFAULT_SLIDE_SPEED)).toLong()
-                .coerceIn((1000L + settingsCache.animationFps - 1) / settingsCache.animationFps, 1_000L)
+        private fun slideFrameIntervalNanos(): Long =
+            (500_000_000.0 / (layer?.slide?.speedPxPerSecond ?: DEFAULT_SLIDE_SPEED)).toLong()
+                .coerceIn(1_000_000_000L / settingsCache.animationFps, 1_000_000_000L)
 
         private fun updateSlideTicker() {
             if (visible && layer?.slide?.mode?.let { it != SlideMode.OFF } == true) draw()
