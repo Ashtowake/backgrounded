@@ -119,4 +119,11 @@ profiling with shorter tablet regression checks; profiling no longer blocks rele
 The devices' existing
 brightness and panel conditions differed, so the samples are not a controlled power comparison.
 
-No 0.5.3 GitHub release has been published by this hardening run.
+## Publication
+
+Published on 7 October 2026: https://github.com/Ashtowake/backgrounded/releases/tag/v0.5.3.
+The release workflow completed successfully after updating the signer-output parser for current SDK tools.
+The published APK was downloaded and independently checked against the attached SHA-256 file:
+`287ccd329a3cb8fd36aa4057e1ce823d7ace394c7d5d39cf6bb097d9076bae07`.
+Its certificate matches the existing release key, package is `dev.backgrounded`, and version is 5003 / 0.5.3.
+Permissions are unchanged; INTERNET and the debug diagnostics/test implementation are absent.
