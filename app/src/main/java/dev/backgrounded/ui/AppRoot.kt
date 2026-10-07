@@ -1,5 +1,6 @@
 package dev.backgrounded.ui
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -11,6 +12,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import dev.backgrounded.R
 import dev.backgrounded.core.wallpaper.LiveWallpaperController
 import dev.backgrounded.ui.album.AlbumScreen
 import dev.backgrounded.ui.albums.AlbumsScreen
@@ -39,7 +41,11 @@ fun AppRoot(modifier: Modifier = Modifier) {
     if (ready != true) {
         if (ready == false) {
             WallpaperSetupScreen(
-                onApply = { context.startActivity(LiveWallpaperController.applyIntent(context)) },
+                onApply = {
+                    if (!LiveWallpaperController.launchApply(context)) {
+                        Toast.makeText(context, R.string.wallpaper_picker_unavailable, Toast.LENGTH_LONG).show()
+                    }
+                },
                 modifier = modifier,
             )
         }

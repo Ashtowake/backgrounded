@@ -53,6 +53,7 @@
     <string name="home_screen">Home</string>
     <string name="lock_screen">Lock</string>
     <string name="set_live_wallpaper">Set live wallpaper</string>
+    <string name="wallpaper_picker_unavailable">Could not open the system wallpaper picker.</string>
     <string name="picker_steps">Wallpaper &amp; style → Live wallpapers → Backgrounded → Home, Lock or Both</string>
 
     <string name="active_album">Active album</string>

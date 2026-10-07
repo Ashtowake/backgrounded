@@ -1,3 +1,8 @@
+# Unreleased
+
+- Try the direct live wallpaper preview before system picker fallbacks, even when package queries hide it.
+- Handle unavailable or restricted wallpaper pickers without crashing during setup or from Settings.
+
 # v0.5.3
 
 - Stop wallpaper loading, animation frames, and automatic rotation while invisible; apply one overdue change on return.

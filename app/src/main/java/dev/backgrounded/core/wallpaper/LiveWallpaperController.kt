@@ -1,29 +1,43 @@
 package dev.backgrounded.core.wallpaper
 
+import android.app.Activity
 import android.app.WallpaperManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import dev.backgrounded.wallpaper.BackgroundedWallpaperService
 
-/** Resolve chain for applying our live wallpaper, plus applied-state detection. */
+/** Launch our live wallpaper preview with fallbacks for unsupported system entry points. */
 object LiveWallpaperController {
     fun componentName(context: Context): ComponentName =
         ComponentName(context, BackgroundedWallpaperService::class.java)
 
-    /**
-     * Best available entry point on this device: the direct live wallpaper preview when the
-     * platform exposes it, otherwise the system wallpaper picker.
-     */
-    fun applyIntent(context: Context): Intent {
+    // Package visibility can hide a launchable activity from resolveActivity(). Try launching instead.
+    @Suppress("SwallowedException")
+    fun launchApply(context: Context): Boolean {
         val component = componentName(context)
         val direct =
             Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER)
                 .putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, component)
-        if (direct.resolveActivity(context.packageManager) != null) return direct
-        val chooser = Intent(ACTION_LIVE_WALLPAPER_CHOOSER)
-        if (chooser.resolveActivity(context.packageManager) != null) return chooser
-        return Intent(Intent.ACTION_SET_WALLPAPER)
+        val intents =
+            listOf(
+                direct,
+                Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER),
+                Intent(Intent.ACTION_SET_WALLPAPER),
+            )
+        for (intent in intents) {
+            if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                context.startActivity(intent)
+                return true
+            } catch (_: ActivityNotFoundException) {
+                // Unsupported entry point; try the next system picker.
+            } catch (_: SecurityException) {
+                // Some OEMs restrict an otherwise available entry point.
+            }
+        }
+        return false
     }
 
     fun isApplied(
@@ -47,6 +61,4 @@ object LiveWallpaperController {
             info?.component?.equals(component) == true
         }.getOrDefault(false)
     }
-
-    const val ACTION_LIVE_WALLPAPER_CHOOSER = "android.service.wallpaper.LIVE_WALLPAPER_CHOOSER"
 }

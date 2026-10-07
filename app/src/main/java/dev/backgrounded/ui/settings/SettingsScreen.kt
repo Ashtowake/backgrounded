@@ -239,7 +239,13 @@ fun SettingsScreen(
                     .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            TextButton(onClick = { context.startActivity(LiveWallpaperController.applyIntent(context)) }) {
+            TextButton(onClick = {
+                if (!LiveWallpaperController.launchApply(context)) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(context.getString(R.string.wallpaper_picker_unavailable))
+                    }
+                }
+            }) {
                 Text(stringResource(R.string.set_live_wallpaper))
             }
 

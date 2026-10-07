@@ -76,4 +76,5 @@ after a process restart. The optional PIN remains an alternative to system authe
 - sharable .zip wallpaper packages
 
 # Known Bugs
-- incompatibility on some devices where the live wallpaper system prompt is handled differently
+- System wallpaper setup on some OEM devices, including RedMagicOS 10: direct-launch fix implemented;
+  confirmation on affected hardware is pending.
