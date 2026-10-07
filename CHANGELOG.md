@@ -10,6 +10,7 @@
 - Default folder discovery to 15 minutes with provider notifications; preserve saved scan intervals.
 - Cancel image preparation between rotation and blur, and avoid a redundant full-surface clear.
 - Pace animation against display timestamps to avoid skipping vsyncs through rounded callback delays.
+- Keep editor rendering independent of the wallpaper memory budget, at stable working resolution.
 - Stream folder imports and scans; retain document identities and album-scoped duplicate results.
 - Validate configuration replacements and protect encrypted assets, moved originals, and unfinished transfers.
 - Journal file operations and add authenticated encryption format v2 while preserving v1 reads.

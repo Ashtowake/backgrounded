@@ -5,11 +5,18 @@
 Latest completed run: 126 unit tests; earlier device runs passed 12 primary native checks and one revoked-access check;
 ktlint, detekt, debug/release lint and signed release assembly passed.
 
-Signed candidate SHA-256: `26187da65c54393620edfee9995af14a6c8bab1cd816c02711312a9891c93929`.
-The frame-pacing candidate is installed on the Pixel, preserving production data; no app or Room crash
-was found after launch. The tablet retains the preceding candidate
+Signed candidate SHA-256: `eed0eec943a502dc2d8a188490a0cdf043aee023e592ba65cd021feebcff9c6a`.
+The editor-isolation candidate is installed on the Pixel, preserving production data. The tablet retains an earlier candidate
 (`c7148bf39e4a0fc82d0b06a7fbeab703f16735963dad59ee951dc455f525e3a0`).
 Both candidates use version code 5003 and version name 0.5.3.
+
+On 7 October, the editor was separated from the wallpaper/thumbnail allocation budget after manual
+testing exposed crashing, transient rescaling and excessive downsampling. Its previous 2048-pixel source
+and 1400-pixel preview limits are restored, with an independent renderer and no resolution-halving fallback,
+forced collection or budget-message overlay. Encrypted input retains its 64 MiB bound.
+The signed release build and Pixel installation succeeded. At the user's request, automated testing was
+not repeated for this change; the automated results below describe preceding candidates.
+Manual checks requested: drag/zoom/rotate Home and Lock, repeat with a hidden image, and compare the saved wallpaper.
 
 The follow-up changes use a 15-minute scan default when no preference is saved, retain saved scan choices,
 check cancellation before rotation and between preparation stages, and remove only the outer canvas clear.

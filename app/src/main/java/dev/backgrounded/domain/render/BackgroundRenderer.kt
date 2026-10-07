@@ -92,6 +92,7 @@ class BackgroundRenderer
                     (viewport.height * scale).toInt().coerceAtLeast(1),
                 )
             var output: Bitmap? = null
+            var completed = false
             try {
                 output = createBitmap(actual.width, actual.height)
                 draw(
@@ -109,7 +110,9 @@ class BackgroundRenderer
                             preparedBackdrop = prepareBackdrop(rotated, framing),
                         ),
                 )
+                completed = true
             } finally {
+                if (!completed) output?.recycle()
                 if (rotated !== source) rotated.recycle()
             }
             return output

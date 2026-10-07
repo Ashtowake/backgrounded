@@ -54,11 +54,12 @@ class EditorViewModel
         savedStateHandle: SavedStateHandle,
         private val albumRepository: AlbumRepository,
         private val bitmapLoader: BitmapLoader,
-        private val backgroundRenderer: BackgroundRenderer,
         private val thumbnailCache: ThumbnailCache,
         private val displayRepository: DisplayRepository,
     ) : ViewModel() {
         private val pairId: Long = savedStateHandle.toRoute<EditorRoute>().pairId
+        // Interactive editing keeps a stable working resolution, independent of wallpaper/cache pressure.
+        private val backgroundRenderer = BackgroundRenderer()
 
         private val mutableState = MutableStateFlow(EditorUiState())
         val state: StateFlow<EditorUiState> = mutableState.asStateFlow()
@@ -475,6 +476,7 @@ class EditorViewModel
                 bitmapLoader.decode(
                     asset, MAX_SOURCE_DIMENSION, MAX_SOURCE_DIMENSION,
                     wallpaperPriority = false,
+                    editorPreview = true,
                 ) ?: return null
             synchronized(cachedSources) {
                 if (cacheDisposed) {

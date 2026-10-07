@@ -45,6 +45,8 @@ After importing a configuration, grant its original folders or full access, then
 Automatic rotation runs while the wallpaper is visible. When it becomes visible again,
 one overdue change is applied; missed intervals are not replayed. Wallpaper previews do not drive rotation.
 Static wallpapers do not schedule continuous frames or wakeup alarms.
+The interactive editor uses its own renderer and stable working resolution, independently of
+the wallpaper and thumbnail memory budget.
 
 Settings provides a 30 FPS animation ceiling by default, with an optional 60 FPS ceiling,
 and an app-wide linked-folder scan interval (every rotation, 1 minute, 5 minutes, or 15 minutes).

@@ -80,6 +80,7 @@ class BitmapLoader
             targetWidth: Int,
             targetHeight: Int,
             wallpaperPriority: Boolean = true,
+            editorPreview: Boolean = false,
         ): Bitmap? =
             withContext(Dispatchers.IO) {
                 if (unavailable(background)) return@withContext null
@@ -100,7 +101,7 @@ class BitmapLoader
                         val source =
                             if (background.sourceType == SourceType.ENCRYPTED_IMPORT) {
                                 val length = EncryptedFileCodec.plaintextLength(File(background.storageRef)).toInt()
-                                encoded = memory.reserve(length.toLong() + 1024 * 1024)
+                                if (!editorPreview) encoded = memory.reserve(length.toLong() + 1024 * 1024)
                                 val bytes = ByteArray(length)
                                 plaintext = bytes
                                 encryptedImageStore.open(background)?.use { input ->
@@ -121,16 +122,17 @@ class BitmapLoader
                                 val requested =
                                     minOf(1.0, targetWidth.toDouble() / width, targetHeight.toDouble() / height)
                                 // Allow source plus a potentially doubled rotated ARGB bitmap before publication.
-                                val maxPixels = memory.remaining() / 16.0
+                                val maxPixels =
+                                    if (editorPreview) width.toDouble() * height else memory.remaining() / 16.0
                                 val scale =
                                     minOf(requested, kotlin.math.sqrt(maxPixels / (width.toDouble() * height)))
                                 if (!scale.isFinite() || scale <= 0) error("Image memory budget exceeded")
                                 val outWidth = max(1, (width * scale).toInt())
                                 val outHeight = max(1, (height * scale).toInt())
-                                pixels = memory.reserve(outWidth.toLong() * outHeight * 8)
+                                if (!editorPreview) pixels = memory.reserve(outWidth.toLong() * outHeight * 8)
                                 decoder.setTargetSize(outWidth, outHeight)
                             }
-                        memory.track(requireNotNull(decoded))
+                        if (!editorPreview) memory.track(requireNotNull(decoded))
                         diagnostics.count(diagnosticsEnabled, "decode_completed")
                         diagnostics.gauge(
                             diagnosticsEnabled,
