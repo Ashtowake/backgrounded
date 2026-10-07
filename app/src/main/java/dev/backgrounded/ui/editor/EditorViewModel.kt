@@ -58,6 +58,7 @@ class EditorViewModel
         private val displayRepository: DisplayRepository,
     ) : ViewModel() {
         private val pairId: Long = savedStateHandle.toRoute<EditorRoute>().pairId
+
         // Interactive editing keeps a stable working resolution, independent of wallpaper/cache pressure.
         private val backgroundRenderer = BackgroundRenderer()
 

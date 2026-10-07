@@ -5,8 +5,11 @@
 Latest completed run: 126 unit tests; earlier device runs passed 12 primary native checks and one revoked-access check;
 ktlint, detekt, debug/release lint and signed release assembly passed.
 
-Signed candidate SHA-256: `eed0eec943a502dc2d8a188490a0cdf043aee023e592ba65cd021feebcff9c6a`.
-The editor-isolation candidate is installed on the Pixel, preserving production data. The tablet retains an earlier candidate
+Prepared release APK SHA-256: `4a7cf72e015a1be491080f7ab29fd0caad7f18f5e67e169c92dc6e09123b9773`.
+The APK, checksum and release notes are under `app/build/releases/0.5.3`.
+Pixel manual checks used the editor-isolation candidate
+(`eed0eec943a502dc2d8a188490a0cdf043aee023e592ba65cd021feebcff9c6a`), preserving production data.
+The tablet retains an earlier candidate
 (`c7148bf39e4a0fc82d0b06a7fbeab703f16735963dad59ee951dc455f525e3a0`).
 Both candidates use version code 5003 and version name 0.5.3.
 
@@ -14,9 +17,14 @@ On 7 October, the editor was separated from the wallpaper/thumbnail allocation b
 testing exposed crashing, transient rescaling and excessive downsampling. Its previous 2048-pixel source
 and 1400-pixel preview limits are restored, with an independent renderer and no resolution-halving fallback,
 forced collection or budget-message overlay. Encrypted input retains its 64 MiB bound.
-The signed release build and Pixel installation succeeded. At the user's request, automated testing was
-not repeated for this change; the automated results below describe preceding candidates.
-Manual checks requested: drag/zoom/rotate Home and Lock, repeat with a hidden image, and compare the saved wallpaper.
+The signed release build and Pixel installation succeeded. The user confirmed that the canvas works again,
+and subsequently confirmed smooth animation at 60 FPS and correct Fit/background-fill crossfades.
+The user clarified that automated checks should continue, with interactive device checks performed manually.
+On 7 October, the final source passed all 126 unit tests, ktlint, detekt, debug/release lint and signed assembly.
+Release preparation extracted the unchanged editor allocation decisions into helpers and corrected formatting.
+Signature/package inspection confirmed the existing certificate, version code 5003, version name 0.5.3,
+unchanged permissions, no INTERNET permission and no diagnostics/test implementation in release dex.
+The tag-triggered release workflow now runs these automated build gates before publishing its APK.
 
 The follow-up changes use a 15-minute scan default when no preference is saved, retain saved scan choices,
 check cancellation before rotation and between preparation stages, and remove only the outer canvas clear.
@@ -27,7 +35,7 @@ and checks deadlines in the callback. It removes upward millisecond rounding and
 Four new regression tests cover consecutive 60 FPS frames, 30 FPS on 60 Hz, 60 FPS on 120 Hz,
 and adaptive slide deadlines. The complete 126-test suite and all build gates passed in a fresh,
 single-worker Gradle run after an internal Kotlin FIR crash in lint's parallel test analysis.
-On-device animation smoothness and visual Fit/background crossfade checks remain for release preparation.
+On-device animation smoothness and visual Fit/background crossfade checks were confirmed by the user on 7 October.
 
 Run from the project root, with Gradle's user home on D:
 

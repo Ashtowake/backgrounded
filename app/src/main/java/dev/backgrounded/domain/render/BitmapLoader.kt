@@ -68,6 +68,17 @@ class BitmapLoader
 
         @Volatile private var diagnosticsEnabled = false
 
+        private fun decodePixelLimit(
+            width: Int,
+            height: Int,
+            editorPreview: Boolean,
+        ): Double = if (editorPreview) width.toDouble() * height else memory.remaining() / 16.0
+
+        private fun reserveForDecode(
+            bytes: Long,
+            editorPreview: Boolean,
+        ): ImageMemoryBudget.Reservation? = if (editorPreview) null else memory.reserve(bytes)
+
         init {
             scope.launch {
                 settings.settings.collect { diagnosticsEnabled = it.debugDiagnostics }
@@ -101,7 +112,7 @@ class BitmapLoader
                         val source =
                             if (background.sourceType == SourceType.ENCRYPTED_IMPORT) {
                                 val length = EncryptedFileCodec.plaintextLength(File(background.storageRef)).toInt()
-                                if (!editorPreview) encoded = memory.reserve(length.toLong() + 1024 * 1024)
+                                encoded = reserveForDecode(length.toLong() + 1024 * 1024, editorPreview)
                                 val bytes = ByteArray(length)
                                 plaintext = bytes
                                 encryptedImageStore.open(background)?.use { input ->
@@ -122,14 +133,13 @@ class BitmapLoader
                                 val requested =
                                     minOf(1.0, targetWidth.toDouble() / width, targetHeight.toDouble() / height)
                                 // Allow source plus a potentially doubled rotated ARGB bitmap before publication.
-                                val maxPixels =
-                                    if (editorPreview) width.toDouble() * height else memory.remaining() / 16.0
+                                val maxPixels = decodePixelLimit(width, height, editorPreview)
                                 val scale =
                                     minOf(requested, kotlin.math.sqrt(maxPixels / (width.toDouble() * height)))
                                 if (!scale.isFinite() || scale <= 0) error("Image memory budget exceeded")
                                 val outWidth = max(1, (width * scale).toInt())
                                 val outHeight = max(1, (height * scale).toInt())
-                                if (!editorPreview) pixels = memory.reserve(outWidth.toLong() * outHeight * 8)
+                                pixels = reserveForDecode(outWidth.toLong() * outHeight * 8, editorPreview)
                                 decoder.setTargetSize(outWidth, outHeight)
                             }
                         if (!editorPreview) memory.track(requireNotNull(decoded))

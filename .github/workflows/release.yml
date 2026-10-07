@@ -42,8 +42,10 @@ jobs:
         run: |
           version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
           test "$GITHUB_REF_NAME" = "v$version"
-      - name: Build release APK
-        run: bash ./gradlew --no-daemon assembleRelease
+      - name: Check and build release APK
+        run: >-
+          bash ./gradlew --no-daemon --max-workers=1
+          detekt ktlintCheck testDebugUnitTest lintDebug lintRelease assembleRelease
       - name: Verify signature and package
         run: |
           apk=app/build/outputs/apk/release/app-release.apk

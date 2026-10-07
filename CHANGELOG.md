@@ -1,4 +1,4 @@
-# v0.5.3 (unreleased)
+# v0.5.3
 
 - Stop wallpaper loading, animation frames, and automatic rotation while invisible; apply one overdue change on return.
 - Cancel service and engine work on destruction and reuse unchanged prepared wallpaper layers.
